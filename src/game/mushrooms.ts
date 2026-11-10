@@ -3,6 +3,7 @@
  * stored: each cell answers from a hash whether it holds one and what it looks
  * like. The only state is the ledger of which ones the player has absorbed.
  */
+import { collectibleKind, collectibleScale, ICE, MEADOW, DUNES, SCREE, LAVA } from './biomes.ts';
 import { hash2, smoothstep, valueNoise2 } from './noise.ts';
 import { courseCenter, courseHalfWidth, terrainHeight } from './terrain.ts';
 import {
@@ -11,7 +12,6 @@ import {
   MUSHROOM_EDGE_MARGIN,
   MUSHROOM_FREE_UNTIL,
   MUSHROOM_LEDGER_SIZE,
-  MUSHROOM_LOOK_COUNT,
   MUSHROOM_MAX_RADIUS,
   MUSHROOM_MIN_RADIUS,
   MUSHROOM_PATCH_DENSITY,
@@ -31,19 +31,45 @@ const SEED_COLOR = WORLD_SEED + 46;
 const SEED_COLOR_2 = WORLD_SEED + 47;
 const SEED_SHAPE = WORLD_SEED + 48;
 const SEED_PATCH = WORLD_SEED + 49;
+const SEED_KIND = WORLD_SEED + 50;
+
+/** Look ids, in the order of LOOKS in render/jelly-looks.ts (a test keeps the two in step). */
+export const LOOK = {
+  classic: 0, zebra: 1, spotty: 2, stripy: 3, swirly: 4, sprinkle: 5, checked: 6, twoTone: 7, glitter: 8, rainbow: 9, galaxy: 10, golden: 11,
+} as const;
+const ALL_LOOKS = Object.values(LOOK);
+/**
+ * The collectibles of each biome, by kind: jelly mushrooms in the meadow,
+ * snowballs on the ice, cacti in the dunes, crystals in the scree, embers
+ * on the lava. Each kind only comes in the looks that suit it.
+ */
+export const KIND_NAMES: readonly string[] = [];
+(KIND_NAMES as string[])[MEADOW] = 'mushroom';
+(KIND_NAMES as string[])[ICE] = 'snowball';
+(KIND_NAMES as string[])[DUNES] = 'cactus';
+(KIND_NAMES as string[])[SCREE] = 'crystal';
+(KIND_NAMES as string[])[LAVA] = 'ember';
+const KIND_LOOKS: readonly (readonly number[])[] = [];
+(KIND_LOOKS as number[][])[ICE] = [LOOK.classic, LOOK.classic, LOOK.glitter];
+(KIND_LOOKS as number[][])[MEADOW] = ALL_LOOKS;
+(KIND_LOOKS as number[][])[DUNES] = [LOOK.classic, LOOK.stripy, LOOK.spotty];
+(KIND_LOOKS as number[][])[SCREE] = [LOOK.classic, LOOK.glitter, LOOK.galaxy, LOOK.twoTone];
+(KIND_LOOKS as number[][])[LAVA] = [LOOK.classic, LOOK.golden, LOOK.swirly];
 
 export type Mushroom = {
   x: number; y: number; z: number; radius: number;
+  /** What it is: the index of the biome it grows in (see KIND_NAMES). */
+  kind: number;
   /** Index into the looks list (classic, zebra, spotty, ...). */
   look: number;
-  /** Indices into the sweet palette: main colour and pattern colour. */
+  /** Indices into its kind's palette: main colour and pattern colour. */
   color: number; color2: number;
   /** 0..1, varies the shape, pattern and wobble phase. */
   seed: number;
 };
 
 export function createMushroom(): Mushroom {
-  return { x: 0, y: 0, z: 0, radius: 0, look: 0, color: 0, color2: 0, seed: 0 };
+  return { x: 0, y: 0, z: 0, radius: 0, kind: 0, look: 0, color: 0, color2: 0, seed: 0 };
 }
 
 export function mushroomCellIndex(coordinate: number): number {
@@ -54,7 +80,7 @@ export function mushroomCellIndex(coordinate: number): number {
 export function mushroomDensity(x: number, s: number): number {
   if (s < MUSHROOM_FREE_UNTIL) return 0;
   const patch = valueNoise2(x / MUSHROOM_PATCH_WAVELENGTH, s / MUSHROOM_PATCH_WAVELENGTH, SEED_PATCH);
-  return MUSHROOM_PATCH_DENSITY * smoothstep(MUSHROOM_PATCH_THRESHOLD, MUSHROOM_PATCH_THRESHOLD + MUSHROOM_PATCH_FEATHER, patch);
+  return MUSHROOM_PATCH_DENSITY * collectibleScale(s) * smoothstep(MUSHROOM_PATCH_THRESHOLD, MUSHROOM_PATCH_THRESHOLD + MUSHROOM_PATCH_FEATHER, patch);
 }
 
 /** Fills `out` with the mushroom of cell (cellX, cellZ); false when the cell is empty. */
@@ -72,7 +98,9 @@ export function mushroomInCell(cellX: number, cellZ: number, out: Mushroom): boo
   const step = 1 + Math.floor(hash2(cellX, cellZ, SEED_COLOR_2) * (MUSHROOM_COLOR_COUNT - 1));
   out.x = x; out.z = z; out.radius = radius;
   out.y = terrainHeight(x, z) + radius * MUSHROOM_REST_HEIGHT;
-  out.look = Math.floor(hash2(cellX, cellZ, SEED_LOOK) * MUSHROOM_LOOK_COUNT);
+  out.kind = collectibleKind(s, hash2(cellX, cellZ, SEED_KIND));
+  const looks = KIND_LOOKS[out.kind];
+  out.look = looks[Math.floor(hash2(cellX, cellZ, SEED_LOOK) * looks.length)];
   out.color = color;
   out.color2 = (color + step) % MUSHROOM_COLOR_COUNT;
   out.seed = hash2(cellX, cellZ, SEED_SHAPE);

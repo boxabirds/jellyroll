@@ -6,7 +6,7 @@ import * as THREE from 'three/webgpu';
 import { clamp } from '../game/noise.ts';
 import type { Ball } from '../game/physics.ts';
 import { courseDrift, terrainHeight } from '../game/terrain.ts';
-import { HEADING_MIN_SPEED, START_RADIUS } from '../game/tuning.ts';
+import { HEADING_MIN_SPEED, MAX_SPEED, START_RADIUS } from '../game/tuning.ts';
 import { VIEW_DISTANCE } from './terrain-mesh.ts';
 
 const NEAR = 0.3;
@@ -14,7 +14,7 @@ const FAR = VIEW_DISTANCE * 1.5;
 const FOV_SLOW = 56;
 const FOV_FAST = 72;
 /** Speed (m/s) at which the camera is fully pulled back and widened. */
-const FAST_SPEED = 42;
+const FAST_SPEED = MAX_SPEED;
 const DISTANCE_SLOW = 4.6;
 const DISTANCE_FAST = 6.6;
 const HEIGHT_SLOW = 1.9;
@@ -33,6 +33,11 @@ const ZOOM_RATE = 1.6;
 const SCALE_RATE = 2;
 /** ...but it stops closing in on a jelly that is wearing away to a speck. */
 const MIN_SCALE = 0.4;
+/**
+ * Smoothing makes the camera trail a fast jelly. It may fall this many times
+ * its intended distance behind, no further.
+ */
+const MAX_TRAIL = 1.5;
 
 export class ChaseCamera {
   readonly camera = new THREE.PerspectiveCamera(FOV_SLOW, 1, NEAR, FAR);
@@ -67,8 +72,16 @@ export class ChaseCamera {
     const follow = 1 - Math.exp(-POSITION_RATE * dt);
     this.x += (ball.x - this.headingX * distance - this.x) * follow;
     this.z += (ball.z - this.headingZ * distance - this.z) * follow;
+    const behind = Math.hypot(ball.x - this.x, ball.z - this.z);
+    if (behind > distance * MAX_TRAIL) {
+      const pull = (distance * MAX_TRAIL) / behind;
+      this.x = ball.x + (this.x - ball.x) * pull;
+      this.z = ball.z + (this.z - ball.z) * pull;
+    }
     // Height follows more lazily, so hops read as hops rather than camera shake.
     this.y += (ball.y + height - this.y) * (1 - Math.exp(-HEIGHT_RATE * dt));
+    // The same limit vertically, for long falls.
+    this.y = Math.min(Math.max(this.y, ball.y + height - distance * MAX_TRAIL), ball.y + height + distance * MAX_TRAIL);
     this.y = Math.max(this.y, terrainHeight(this.x, this.z) + GROUND_CLEARANCE);
     this.pose(ball, originZ);
   }

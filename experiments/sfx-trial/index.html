@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Jelly sound effects trial (ZzFX)</title>
+<style>
+  body { font: 16px/1.4 system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; background: #1b1430; color: #f3ecff; }
+  h1 { font-size: 1.3rem; }
+  #effects { display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: 0.6rem; }
+  button { font: inherit; padding: 0.9rem 0.6rem; border: 0; border-radius: 0.8rem; background: #ff7ac8; color: #2a0f3a; cursor: pointer; }
+  button:active { transform: scale(0.96); }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; margin-top: 1.5rem; font-variant-numeric: tabular-nums; }
+  dt { opacity: 0.7; }
+  dd { margin: 0; }
+  #meter { height: 0.8rem; background: #3a2b5c; border-radius: 0.4rem; overflow: hidden; }
+  #meter-fill { height: 100%; width: 0; background: #7affc1; }
+  .silent { color: #ffb37a; }
+</style>
+</head>
+<body>
+<h1>Jelly sound effects trial</h1>
+<p>Each press synthesises a fresh variation with ZzFX and plays it. If a press makes no sound, the read-outs below say where it stopped.</p>
+<div id="effects"></div>
+<dl>
+  <dt>Audio context</dt><dd id="context-state">not created yet (press a button)</dd>
+  <dt>Sample rate</dt><dd id="sample-rate">-</dd>
+  <dt>Sounds started</dt><dd id="played">0</dd>
+  <dt>Loudest output seen</dt><dd id="loudest">0.000</dd>
+  <dt>Output level</dt><dd><div id="meter"><div id="meter-fill"></div></div></dd>
+  <dt>Last error</dt><dd id="error">none</dd>
+</dl>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

@@ -19,7 +19,10 @@ export const MAX_RADIUS = 2.4;
  */
 export const WEAR_PER_METRE = 0.00035;
 export const WEAR_PER_METRE_PER_RADIUS = 0.0007;
-export const GRAVITY = 9.81;
+/** Earth gravity plus 30%: the jelly is heavy, hugs the ground and lands with a thump. */
+const EARTH_GRAVITY = 9.81;
+const GRAVITY_GAIN = 1.3;
+export const GRAVITY = EARTH_GRAVITY * GRAVITY_GAIN;
 
 // --- Fixed-step loop --------------------------------------------------------
 export const PHYSICS_HZ = 120;
@@ -37,15 +40,20 @@ export const BRAKE_ACCEL = 7;
 export const STEER_ACCEL = 14;
 /** Fraction of ground control authority that remains while airborne. */
 export const AIR_CONTROL = 0.35;
-/** Quadratic drag (1/m). Sets the terminal speed for a given slope. */
-export const DRAG = 0.0049;
+/** Top speed, as shown on the HUD (km/h). */
+export const MAX_SPEED_KMH = 100;
+export const KMH_PER_MS = 3.6;
+export const MAX_SPEED = MAX_SPEED_KMH / KMH_PER_MS;
+/** Above this speed (m/s) steering strengthens in proportion, keeping the turn rate constant. */
+export const STEER_REFERENCE_SPEED = 14;
 /** Push along the course when something has slowed the jelly below MIN_SPEED. */
-export const NUDGE_ACCEL = 9;
+export const NUDGE_ACCEL = 12;
 /** Below this horizontal speed the heading is taken from the course instead. */
 export const HEADING_MIN_SPEED = 1;
 
 // --- Jump -------------------------------------------------------------------
-export const JUMP_SPEED = 6.5;
+/** Launch speed of a hop; with the heavier gravity it still clears about 2 m. */
+export const JUMP_SPEED = 7.4;
 /** A jump still counts this long after leaving the ground. */
 export const JUMP_COYOTE_SECONDS = 0.1;
 /** A press this long before landing still jumps on touchdown. */
@@ -60,6 +68,8 @@ export const GROUND_CONTACT_SLOP = 0.03;
 export const ROCK_RESTITUTION = 0.55;
 /** Along-surface speed lost per m/s of impact into a rock. */
 export const ROCK_FRICTION = 0.25;
+/** Sideways push (m/s²) that slides a slow jelly off a rock it is resting against. */
+export const ROCK_SLIDE_ACCEL = 14;
 /** Rate (1/s) at which airborne spin relaxes; grounded spin is pure rolling. */
 export const SPIN_FOLLOW_RATE = 30;
 
@@ -67,6 +77,14 @@ export const SPIN_FOLLOW_RATE = 30;
 export const WORLD_SEED = 20261110;
 /** Average descent per metre travelled. */
 export const MEAN_SLOPE = 0.24;
+/**
+ * Quadratic air drag (1/m). On the average slope it would let W level off a
+ * little above MAX_SPEED (by DRAG_HEADROOM), so the jelly really does reach
+ * the limit and the limit is what holds it there. Coasting settles at roughly
+ * 60% of top speed, so W is what gets it there.
+ */
+const DRAG_HEADROOM = 1.15;
+export const DRAG = (GRAVITY * MEAN_SLOPE + BOOST_ACCEL) / (MAX_SPEED * DRAG_HEADROOM) ** 2;
 /**
  * Long undulations of the descent. Sum of amplitude*2π/wavelength stays below
  * MEAN_SLOPE so the course never turns uphill on average.
@@ -104,6 +122,24 @@ export const HILL_WAVELENGTH = 70;
 export const HILL_AMPLITUDE = 3.2;
 export const MOGUL_WAVELENGTH = 18;
 export const MOGUL_AMPLITUDE = 1.0;
+/**
+ * Three more scales of relief between the broad hills and the fine ripple, so
+ * the ground is not one smooth undulation:
+ *   - rollers: ridges lying across the course, a few car-lengths apart;
+ *   - knolls: small humps and hollows everywhere, not only on rough stretches;
+ *   - grooves: shallow channels running down the course that the jelly can ride.
+ * Their steepest faces stay far below what the course's pull can climb (a test
+ * checks every slope against that), so none of it can trap the jelly.
+ */
+export const ROLLER_WAVELENGTH = 30;
+export const ROLLER_AMPLITUDE = 0.75;
+/** Rollers bend across the valley over this distance, so they are not ruler-straight. */
+export const ROLLER_SKEW_WAVELENGTH = 90;
+export const KNOLL_WAVELENGTH = 12;
+export const KNOLL_AMPLITUDE = 0.38;
+export const GROOVE_WIDTH = 9;
+export const GROOVE_LENGTH = 140;
+export const GROOVE_AMPLITUDE = 0.32;
 export const RIPPLE_WAVELENGTH = 8;
 export const RIPPLE_AMPLITUDE = 0.14;
 /** Length scale over which smooth stretches give way to rough ones. */
@@ -161,12 +197,28 @@ export const MUSHROOM_EDGE_MARGIN = -5;
 export const MUSHROOM_REST_HEIGHT = 0.85;
 /** The jelly absorbs a mushroom once their surfaces overlap by this fraction of the mushroom. */
 export const MUSHROOM_TOUCH = 0.85;
-export const MUSHROOM_LOOK_COUNT = 12;
 export const MUSHROOM_COLOR_COUNT = 6;
 /** How many merges are remembered so a hashed mushroom does not grow back. */
 export const MUSHROOM_LEDGER_SIZE = 512;
 /** Merges reported per physics step (a big jelly can swallow several at once). */
 export const MAX_PICKUPS_PER_STEP = 4;
+
+// --- Magnet power-up ----------------------------------------------------------
+/** How long a magnet lasts once picked up. */
+export const MAGNET_SECONDS = 10;
+/** While it lasts, mushrooms within this distance of the jelly's surface are pulled in. */
+export const MAGNET_RADIUS = 9;
+/** One stretch of course this long holds at most one magnet. */
+export const MAGNET_SPACING = 320;
+export const MAGNET_CHANCE = 0.75;
+/** Magnets keep this far from either end of their stretch, so the first is never at the start line. */
+export const MAGNET_MARGIN = 70;
+/** Magnets sit within this fraction of the valley half width of its centre line. */
+export const MAGNET_LATERAL_FRACTION = 0.55;
+/** Height of the floating magnet's centre above the ground. */
+export const MAGNET_FLOAT_HEIGHT = 1.6;
+/** The magnet is picked up when the jelly's surface comes this close to its centre. */
+export const MAGNET_PICKUP_RADIUS = 1.8;
 
 // --- Finite differences -----------------------------------------------------
 /** Step used to estimate the terrain gradient. */

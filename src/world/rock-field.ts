@@ -3,11 +3,12 @@
  * rebuilt from the rock hash only when the jelly crosses into a new rock cell.
  */
 import * as THREE from 'three/webgpu';
-import { color, mx_noise_float, positionLocal } from 'three/tsl';
+import { mx_noise_float, positionLocal, vec3 } from 'three/tsl';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { valueNoise2 } from '../game/noise.ts';
 import { createRock, rockCellIndex, rockInCell } from '../game/rocks.ts';
 import { RIDGE_DISTANCE, ROCK_CELL, VALLEY_HALF_WIDTH, VALLEY_HALF_WIDTH_SWING, WORLD_SEED } from '../game/tuning.ts';
+import { rockColorAt } from './biome-looks.ts';
 import { VIEW_DISTANCE } from './terrain-mesh.ts';
 
 const ROCK_DETAIL = 3;
@@ -19,7 +20,6 @@ const SHAPE_OCTAVES = [
 ] as const;
 /** Boulders are a little wider than tall. */
 const ROCK_FLATTEN = 0.86;
-const ROCK_COLOR = new THREE.Color('#8d8a84');
 const ROCK_ROUGHNESS = 0.92;
 /** Surface mottling: frequency in rock-local space and depth of the variation. */
 const MOTTLE_FREQUENCY = 5;
@@ -75,10 +75,10 @@ export class RockField {
   private originZ = Number.NaN;
 
   constructor() {
-    const material = new THREE.MeshStandardNodeMaterial({ color: ROCK_COLOR, roughness: ROCK_ROUGHNESS, metalness: 0 });
+    const material = new THREE.MeshStandardNodeMaterial({ roughness: ROCK_ROUGHNESS, metalness: 0 });
     const mottle = mx_noise_float(positionLocal.mul(MOTTLE_FREQUENCY)).mul(MOTTLE_DEPTH).add(1);
-    // Per-instance colour still multiplies this, so each rock keeps its own shade.
-    material.colorNode = color(ROCK_COLOR).mul(mottle);
+    // The rock's colour comes per instance: its biome's stone, at its own shade.
+    material.colorNode = vec3(mottle);
     this.mesh = new THREE.InstancedMesh(createRockGeometry(), material, MAX_ROCKS);
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.count = 0;
@@ -104,7 +104,7 @@ export class RockField {
         scale.setScalar(rock.radius);
         matrix.compose(position, rotation, scale);
         mesh.setMatrixAt(count, matrix);
-        shade.setScalar(SHADE_MIN + SHADE_RANGE * rock.look);
+        rockColorAt(-rock.z, shade).multiplyScalar(SHADE_MIN + SHADE_RANGE * rock.look);
         mesh.setColorAt(count, shade);
         count++;
       }

@@ -5,7 +5,7 @@
 import * as THREE from 'three/webgpu';
 import type { Ball, Pickup } from '../game/physics.ts';
 import { GRAVITY, MUSHROOM_MAX_RADIUS } from '../game/tuning.ts';
-import { SWEETS } from '../render/colors.ts';
+import { sweetColor } from '../render/colors.ts';
 
 const MAX_DROPLETS = 96;
 const DROPLETS_PER_MERGE = 8;
@@ -69,7 +69,7 @@ export class MergeSplash {
       droplet.radius = DROPLET_RADIUS * sizeScale * (1 - DROPLET_RADIUS_SPREAD * this.random());
       droplet.age = 0;
       // Alternate the mushroom's two colours.
-      const sweet = SWEETS[i % 2 === 0 ? pickup.color : pickup.color2];
+      const sweet = sweetColor(pickup.kind, i % 2 === 0 ? pickup.color : pickup.color2);
       this.mesh.setColorAt(index, this.color.copy(sweet.deep).lerp(sweet.tint, this.random()));
     }
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;

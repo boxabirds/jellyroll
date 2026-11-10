@@ -7,7 +7,7 @@ import './style.css';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <main id="viewport" aria-label="Jellyland"></main>
-  <header class="masthead"><span class="eyebrow">an endless downhill</span><h1>jellyland<span>.</span></h1></header>
+  <header class="masthead"><span class="eyebrow" id="biome">an endless downhill</span><h1>jellyland<span>.</span></h1></header>
   <aside class="readout" aria-label="Run statistics">
     <div class="stat primary"><span id="distance">0 m</span><label>score</label></div>
     <div class="stat"><span><b id="speed">0</b> km/h</span><label>speed</label></div>
@@ -16,6 +16,8 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="stat"><span id="merges">0</span><label>merged</label></div>
     <div class="stat"><span id="best">0 m</span><label>best</label></div>
   </aside>
+  <div id="biome-banner" class="biome-banner" role="status" aria-live="polite"><b id="biome-banner-name"></b><span id="biome-banner-wear"></span></div>
+  <div id="magnet" class="power-up" role="status" aria-live="polite"><span class="power-up-icon" aria-hidden="true"></span>magnet <b id="magnet-seconds">0.0 s</b></div>
   <footer id="hints" class="hints" aria-label="Keyboard controls">
     <span><kbd>W</kbd> faster</span><span><kbd>S</kbd> slower</span>
     <span><kbd>A</kbd> left</span><span><kbd>D</kbd> right</span>

@@ -1,12 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mushroomCellIndex, mushroomInCell, createMushroom } from '../src/game/mushrooms.ts';
-import { ballSpeed, createBall, grow, stepBall, wear, type Ball, type ControlInput } from '../src/game/physics.ts';
+import {
+  BIOME_COUNT, BIOME_LENGTH, BIOME_TRANSITION, BIOMES, ICE, LAVA, MEADOW, biomeBlend, biomeStretch, collectibleKind, dominantBiome,
+  hillScale, steerScale, wearScale, widthScale,
+} from '../src/game/biomes.ts';
+import { KIND_NAMES, LOOK, mushroomCellIndex, mushroomInCell, createMushroom } from '../src/game/mushrooms.ts';
+import { LOOKS } from '../src/render/jelly-looks.ts';
+import { createMagnet, magnetInSegment, magnetSegment } from '../src/game/magnets.ts';
+import { ballSpeed, createBall, grantMagnet, grow, magnetActive, stepBall, wear, type Ball, type ControlInput } from '../src/game/physics.ts';
 import { createRock, rockCellIndex, rockInCell } from '../src/game/rocks.ts';
 import { courseCenter, courseHalfWidth, terrainHeight, terrainNormal } from '../src/game/terrain.ts';
 import {
   MUSHROOM_CELL, MUSHROOM_MAX_RADIUS, MUSHROOM_MIN_RADIUS, MAX_RADIUS, MEAN_SLOPE, MIN_RADIUS, MIN_SPEED, PHYSICS_HZ, PHYSICS_STEP,
-  RIDGE_DISTANCE, ROCK_CELL, START_RADIUS,
+  RIDGE_DISTANCE, ROCK_CELL, START_RADIUS, KMH_PER_MS, MAX_SPEED, GRAVITY, NUDGE_ACCEL, ROLLER_WAVELENGTH, KNOLL_WAVELENGTH, MAGNET_RADIUS, MAGNET_SECONDS, MAGNET_SPACING,
+  MAGNET_FLOAT_HEIGHT, MUSHROOM_TOUCH,
 } from '../src/game/tuning.ts';
 import { createWobble, stepWobble } from '../src/game/wobble.ts';
 
@@ -16,6 +23,8 @@ const BRAKE: ControlInput = { throttle: -1, steer: 0 };
 const LEFT: ControlInput = { throttle: 0, steer: -1 };
 const RIGHT: ControlInput = { throttle: 0, steer: 1 };
 
+/** A point well inside the meadow, where every biome multiplier is exactly 1. */
+const MEADOW_MIDDLE = BIOME_LENGTH * (MEADOW + 0.5);
 const RUN_SECONDS = 60;
 const LONG_RUN_SECONDS = 600;
 const SINK_TOLERANCE = 0.02;
@@ -79,7 +88,8 @@ test('with no input the jelly rolls downhill and stays finite, on the ground and
     maxOutside = Math.max(maxOutside, outside);
   }, true);
   assert.ok(ball.distance > LONG_RUN_SECONDS * MIN_SPEED, `only travelled ${ball.distance} m`);
-  assert.ok(maxOutside < 25, `climbed ${maxOutside} m up the valley wall`);
+  // At speed the jelly rides high up the banks, but never over the ridge.
+  assert.ok(maxOutside < RIDGE_DISTANCE, `climbed ${maxOutside} m up the valley wall`);
 });
 
 test('S cannot stop the jelly: it never stays slow, even after hitting rocks head-on', () => {
@@ -205,8 +215,9 @@ test('no jump without Space, and no jump in mid-air', () => {
   assert.equal(jumps, 0, 'jumped while falling from 30 m');
 });
 
-test('wear is a threat: with no mushrooms a fresh jelly shrinks to nothing in about a kilometre', () => {
+test('wear is a threat: in the meadow, with nothing to eat, a fresh jelly shrinks to nothing in about a kilometre', () => {
   const ball = createBall();
+  ball.z = -MEADOW_MIDDLE;
   let metres = 0, previous = ball.radius;
   while (!ball.wornOut && metres < 10_000) {
     wear(ball, 1);
@@ -225,17 +236,30 @@ test('wear is a threat: with no mushrooms a fresh jelly shrinks to nothing in ab
 
 test('a bigger jelly wears faster than a small one', () => {
   const small = createBall(), big = createBall();
+  small.z = big.z = -MEADOW_MIDDLE;
   big.radius = START_RADIUS * 2;
   const smallBefore = small.radius, bigBefore = big.radius;
   wear(small, 100); wear(big, 100);
   assert.ok(bigBefore - big.radius > smallBefore - small.radius);
 });
 
-test('rolling straight past the mushrooms ends the run; it is the merging that keeps a jelly alive', () => {
-  // Boosting dead straight for ten minutes is known to starve (measured: gone in ~100 s).
-  const starved = simulate(BOOST, LONG_RUN_SECONDS);
-  assert.equal(starved.wornOut, true, `a straight boosted run survived at radius ${starved.radius}`);
-  assert.ok(starved.merges > 0, 'it should at least have clipped a few mushrooms on the way');
+test('top speed is 100 km/h: holding W gets close to it, nothing ever passes it, and nothing is skipped at speed', () => {
+  let fastest = 0, merges = 0;
+  simulate(BOOST, LONG_RUN_SECONDS, ball => {
+    const speed = ballSpeed(ball);
+    fastest = Math.max(fastest, speed);
+    merges = ball.merges;
+    assert.ok(speed <= MAX_SPEED * (1 + 1e-9), `${speed * KMH_PER_MS} km/h is over the limit`);
+    assert.ok(terrainHeight(ball.x, ball.z) - ball.y < ball.radius, 'the jelly went through the ground at speed');
+  }, true);
+  assert.equal(Math.round(MAX_SPEED * KMH_PER_MS), 100);
+  assert.ok(fastest > MAX_SPEED * 0.9, `only reached ${fastest * KMH_PER_MS} km/h`);
+  assert.ok(merges > 0, 'a fast jelly should still be able to merge with mushrooms it rolls through');
+  // Left alone, the jelly rolls well below the limit on average: W is what gets it there.
+  let total = 0, steps = 0;
+  simulate(COAST, RUN_SECONDS, ball => { total += ballSpeed(ball); steps++; }, true);
+  const coasting = total / steps;
+  assert.ok(coasting < MAX_SPEED * 0.65, `coasting averaged ${coasting * KMH_PER_MS} km/h`);
 });
 
 test('merging conserves volume when small and never exceeds the maximum size', () => {
@@ -253,8 +277,9 @@ test('mushrooms are plentiful, deterministic, varied, and sit in the valley', ()
   const a = createMushroom(), b = createMushroom();
   const looks = new Set<number>(), colors = new Set<number>();
   let found = 0;
-  const LENGTH_CELLS = 500, HALF_CELLS = 12;
-  for (let cz = -LENGTH_CELLS; cz < 0; cz++) {
+  // The meadow, where every look grows.
+  const LENGTH_CELLS = 340, HALF_CELLS = 12, FIRST = -Math.round((BIOME_LENGTH * MEADOW + 30) / MUSHROOM_CELL);
+  for (let cz = FIRST - LENGTH_CELLS; cz < FIRST; cz++) {
     const s = -(cz + 0.5) * MUSHROOM_CELL;
     const centreCell = mushroomCellIndex(courseCenter(s));
     for (let cx = centreCell - HALF_CELLS; cx <= centreCell + HALF_CELLS; cx++) {
@@ -269,8 +294,8 @@ test('mushrooms are plentiful, deterministic, varied, and sit in the valley', ()
       looks.add(a.look); colors.add(a.color);
     }
   }
-  // 2 km of valley, in patches with bare ground between: still "lots and lots".
-  assert.ok(found > 1000, `only ${found} mushrooms in ${LENGTH_CELLS * MUSHROOM_CELL} m`);
+  // 1.3 km of valley, in patches with bare ground between: still "lots and lots".
+  assert.ok(found > 700, `only ${found} mushrooms in ${LENGTH_CELLS * MUSHROOM_CELL} m`);
   assert.equal(looks.size, 12, 'not every look appears');
   assert.equal(colors.size, 6, 'not every colour appears');
 });
@@ -310,4 +335,249 @@ test('air time counts exactly the seconds spent off the ground, and a jump adds 
   run(WATCH);
   assert.ok(Math.abs(ball.airSeconds - airborneSteps * PHYSICS_STEP) < 1e-9, 'air time disagrees with airborne steps');
   assert.ok(ball.airSeconds - before > 0.5, `a jump added only ${ball.airSeconds - before} s of air time`);
+});
+
+/** A mushroom that exists, and a spot `gap` metres up the course from it, for placing a jelly beside it. */
+function findMushroom(fromS: number) {
+  const mushroom = createMushroom();
+  for (let cz = mushroomCellIndex(-fromS); cz > mushroomCellIndex(-fromS) - 400; cz--) {
+    const centre = mushroomCellIndex(courseCenter(-cz * MUSHROOM_CELL));
+    for (let cx = centre - 6; cx <= centre + 6; cx++) if (mushroomInCell(cx, cz, mushroom)) return mushroom;
+  }
+  throw new Error('no mushroom found');
+}
+
+/** A jelly at rest `away` metres to the side of a mushroom, clear of the ground so nothing shoves it. */
+function ballBeside(mushroom: { x: number; y: number; z: number }, away: number): Ball {
+  const CLEARANCE = 0.2;
+  const ball = createBall();
+  ball.x = mushroom.x + away; ball.z = mushroom.z;
+  ball.y = Math.max(mushroom.y, terrainHeight(ball.x, ball.z) + ball.radius + CLEARANCE);
+  ball.vx = 0; ball.vy = 0; ball.vz = 0;
+  return ball;
+}
+
+const distanceTo = (ball: Ball, point: { x: number; y: number; z: number }) =>
+  Math.hypot(point.x - ball.x, point.y - ball.y, point.z - ball.z);
+
+test('magnets are placed deterministically, float above the valley floor, and appear along the course', () => {
+  const a = createMagnet(), b = createMagnet();
+  let found = 0;
+  const SEGMENTS = 100;
+  for (let segment = 0; segment < SEGMENTS; segment++) {
+    const has = magnetInSegment(segment, a);
+    assert.equal(has, magnetInSegment(segment, b));
+    if (!has) continue;
+    found++;
+    assert.deepEqual(a, b);
+    assert.equal(magnetSegment(-a.z), segment);
+    assert.ok(Math.abs(a.x - courseCenter(-a.z)) < courseHalfWidth(-a.z), 'magnet is outside the valley');
+    assert.ok(Math.abs(a.y - terrainHeight(a.x, a.z) - MAGNET_FLOAT_HEIGHT) < 1e-9);
+    assert.ok(-a.z > 50, 'a magnet sits on the start line');
+  }
+  assert.ok(found > SEGMENTS / 2 && found < SEGMENTS, `${found} magnets in ${SEGMENTS * MAGNET_SPACING} m`);
+});
+
+test('rolling through a magnet switches it on for ten seconds, once', () => {
+  const magnet = createMagnet();
+  let segment = 0;
+  while (!magnetInSegment(segment, magnet)) segment++;
+  const ball = createBall();
+  ball.x = magnet.x; ball.y = magnet.y; ball.z = magnet.z + 3;
+  ball.vx = 0; ball.vy = 0; ball.vz = -15;
+  assert.equal(magnetActive(ball), false);
+  let picked = 0;
+  for (let i = 0; i < PHYSICS_HZ; i++) { stepBall(ball, COAST, PHYSICS_STEP); if (ball.magnetPicked) picked++; }
+  assert.equal(picked, 1, 'the magnet should be picked up exactly once');
+  assert.ok(magnetActive(ball));
+  assert.ok(ball.magnetSeconds > MAGNET_SECONDS - 1.1 && ball.magnetSeconds <= MAGNET_SECONDS);
+  assert.equal(MAGNET_SECONDS, 10);
+});
+
+test('a magnet pulls in mushrooms the jelly is not touching, only within its radius, and only while it lasts', () => {
+  const mushroom = findMushroom(400);
+  const NEAR = START_RADIUS + MAGNET_RADIUS * 0.6;
+  const FAR = START_RADIUS + MAGNET_RADIUS + mushroom.radius * MUSHROOM_TOUCH + 3;
+  const mergedIt = (ball: Ball) => {
+    for (let i = 0; i < ball.pickupCount; i++) if (ball.pickups[i].seed === mushroom.seed) return ball.pickups[i];
+    return undefined;
+  };
+
+  const without = ballBeside(mushroom, NEAR);
+  stepBall(without, COAST, PHYSICS_STEP);
+  assert.equal(mergedIt(without), undefined, 'merged from a distance with no magnet');
+
+  const withMagnet = ballBeside(mushroom, NEAR);
+  grantMagnet(withMagnet);
+  const before = withMagnet.radius, apart = distanceTo(withMagnet, mushroom);
+  assert.ok(apart > START_RADIUS + 3, 'the test should start well clear of the mushroom');
+  stepBall(withMagnet, COAST, PHYSICS_STEP);
+  const pickup = mergedIt(withMagnet);
+  assert.ok(pickup, 'the magnet did not pull in a mushroom inside its radius');
+  assert.ok(Math.abs(pickup.distance - apart) < 0.1, `pickup reports ${pickup.distance} m, the mushroom was ${apart} m away`);
+  assert.ok(withMagnet.radius > before, 'a pulled-in mushroom should make the jelly grow');
+
+  const tooFar = ballBeside(mushroom, FAR);
+  grantMagnet(tooFar);
+  stepBall(tooFar, COAST, PHYSICS_STEP);
+  assert.equal(mergedIt(tooFar), undefined, 'the magnet reached beyond its radius');
+
+  const expired = ballBeside(mushroom, NEAR);
+  grantMagnet(expired);
+  expired.magnetSeconds = PHYSICS_STEP / 2;
+  stepBall(expired, COAST, PHYSICS_STEP);
+  assert.equal(magnetActive(expired), false, 'the magnet outlasted its time');
+  assert.equal(mergedIt(expired), undefined, 'an expired magnet still pulled');
+});
+
+test('a magnet makes a run collect far more mushrooms', () => {
+  const SECONDS = 10, PATCH_START = 585;
+  const run = (magnet: boolean) => {
+    const ball = createBall();
+    // Just uphill of a dense patch (found by scanning the course).
+    ball.z = -PATCH_START; ball.x = courseCenter(PATCH_START); ball.y = terrainHeight(ball.x, ball.z) + ball.radius;
+    if (magnet) grantMagnet(ball);
+    for (let i = 0; i < SECONDS * PHYSICS_HZ; i++) {
+      ball.radius = START_RADIUS; ball.wornOut = false;
+      stepBall(ball, COAST, PHYSICS_STEP);
+    }
+    return ball.merges;
+  };
+  const plain = run(false), pulled = run(true);
+  assert.ok(pulled > plain * 3 && pulled > 10, `${pulled} merges with a magnet vs ${plain} without`);
+});
+
+test('the run starts in the meadow, ice is second, and every biome wears more than the one before', () => {
+  assert.equal(BIOMES[MEADOW].name, 'Meadow');
+  assert.equal(dominantBiome(0), MEADOW);
+  assert.equal(BIOMES[1].name, 'Ice');
+  assert.equal(dominantBiome(BIOME_LENGTH * 1.5), ICE);
+  assert.equal(BIOME_LENGTH, 1500);
+  for (let i = 1; i < BIOME_COUNT; i++) assert.ok(BIOMES[i].wear > BIOMES[i - 1].wear, `${BIOMES[i].name} should wear more than ${BIOMES[i - 1].name}`);
+  for (let i = 0; i < BIOME_COUNT; i++) {
+    const middle = BIOME_LENGTH * (i + 0.5);
+    assert.equal(dominantBiome(middle), i);
+    assert.ok(Math.abs(wearScale(middle) - BIOMES[i].wear) < 1e-12, `wear in the middle of ${BIOMES[i].name}`);
+  }
+});
+
+test('biomes change over 200 m, smoothly, with no jump anywhere', () => {
+  assert.equal(BIOME_TRANSITION, 200);
+  const boundary = BIOME_LENGTH;
+  assert.equal(biomeBlend(boundary - 101, 0), 0);
+  assert.equal(biomeBlend(boundary + 101, 0), 1);
+  assert.ok(Math.abs(biomeBlend(boundary, 0) - 0.5) < 1e-12);
+  // Every blended quantity, and the ground itself, is continuous across three biomes' worth of course.
+  const STEP = 0.5;
+  let previousBlend = 0, previousHeight = terrainHeight(courseCenter(0), 0);
+  let previous = [wearScale(0), steerScale(0), hillScale(0), widthScale(0)];
+  for (let s = STEP; s < BIOME_LENGTH * 3; s += STEP) {
+    const values = [wearScale(s), steerScale(s), hillScale(s), widthScale(s)];
+    values.forEach((value, i) => assert.ok(Math.abs(value - previous[i]) < 0.02, `quantity ${i} jumps at ${s} m`));
+    previous = values;
+    const height = terrainHeight(courseCenter(s), -s);
+    assert.ok(Math.abs(height - previousHeight) < 1.5, `the ground steps ${height - previousHeight} m at ${s} m`);
+    previousHeight = height;
+    if (biomeStretch(s) === biomeStretch(s - STEP)) assert.ok(biomeBlend(s) >= previousBlend - 1e-12, 'blend must not run backwards');
+    previousBlend = biomeBlend(s);
+  }
+});
+
+test('after the last biome the sequence repeats, harder', () => {
+  const lap = BIOME_LENGTH * BIOME_COUNT;
+  for (let i = 0; i < BIOME_COUNT; i++) {
+    const middle = BIOME_LENGTH * (i + 0.5);
+    assert.equal(dominantBiome(middle + lap), i);
+    assert.ok(wearScale(middle + lap) > wearScale(middle) * 1.2, `${BIOMES[i].name} is no harder second time round`);
+  }
+  assert.ok(wearScale(BIOME_LENGTH * (LAVA + 0.5)) > wearScale(BIOME_LENGTH * (MEADOW + 0.5)) * 3);
+});
+
+test('each biome grows its own kind of thing; only transitions mix two kinds', () => {
+  assert.deepEqual([...KIND_NAMES], ['mushroom', 'snowball', 'cactus', 'crystal', 'ember']);
+  assert.deepEqual(Object.keys(LOOK).map(name => name.toLowerCase()), LOOKS.map(name => name.replace('-', '')), 'look ids out of step with the renderer');
+  const item = createMushroom();
+  const kindsNear = (s: number, span: number) => {
+    const kinds = new Set<number>();
+    for (let cz = mushroomCellIndex(-(s + span)); cz <= mushroomCellIndex(-(s - span)); cz++) {
+      const centre = mushroomCellIndex(courseCenter(-cz * MUSHROOM_CELL));
+      for (let cx = centre - 10; cx <= centre + 10; cx++) if (mushroomInCell(cx, cz, item)) kinds.add(item.kind);
+    }
+    return kinds;
+  };
+  for (let i = 0; i < BIOME_COUNT; i++) {
+    assert.deepEqual([...kindsNear(BIOME_LENGTH * (i + 0.5), 400)], [i], `the middle of ${BIOMES[i].name} should grow only ${KIND_NAMES[i]}s`);
+  }
+  assert.deepEqual([...kindsNear(BIOME_LENGTH, 60)].sort(), [MEADOW, ICE], 'the meadow-to-ice transition should mix mushrooms and snowballs');
+  assert.equal(collectibleKind(BIOME_LENGTH - 60, 0.99), MEADOW);
+});
+
+test('ice is slippery: the same steering moves the jelly less than in the meadow', () => {
+  const drift = (s: number) => {
+    const at = (steer: number) => {
+      const ball = createBall();
+      ball.z = -s; ball.x = courseCenter(s); ball.y = terrainHeight(ball.x, ball.z) + ball.radius;
+      for (let i = 0; i < PHYSICS_HZ; i++) stepBall(ball, { throttle: 0, steer }, PHYSICS_STEP);
+      return ball.x;
+    };
+    return at(1) - at(0);
+  };
+  const ice = drift(BIOME_LENGTH * (ICE + 0.5)), meadow = drift(MEADOW_MIDDLE);
+  assert.ok(ice > 0.5 && meadow > 0.5, 'steering right should move right in both');
+  assert.ok(ice < meadow * 0.85, `ice ${ice} m vs meadow ${meadow} m`);
+});
+
+test('the ground has relief at several scales, not one smooth undulation', () => {
+  // Height along the valley floor with the overall descent taken out, then how
+  // much of its movement happens at each scale.
+  const STEP = 0.5, LENGTH = 1200, START = 200;
+  const heights: number[] = [];
+  for (let s = START; s < START + LENGTH; s += STEP) heights.push(terrainHeight(courseCenter(s), -s) + MEAN_SLOPE * s);
+  /** Mean absolute change in height over `metres`, after removing the change over twice that span. */
+  const energyAt = (metres: number) => {
+    const half = Math.round(metres / 2 / STEP);
+    let total = 0, count = 0;
+    for (let i = half; i < heights.length - half; i++) {
+      total += Math.abs(heights[i] - (heights[i - half] + heights[i + half]) / 2);
+      count++;
+    }
+    return total / count;
+  };
+  assert.ok(energyAt(KNOLL_WAVELENGTH) > 0.05, `knoll-scale relief is only ${energyAt(KNOLL_WAVELENGTH)} m`);
+  assert.ok(energyAt(ROLLER_WAVELENGTH) > 0.15, `roller-scale relief is only ${energyAt(ROLLER_WAVELENGTH)} m`);
+  assert.ok(energyAt(140) > 0.5, `hill-scale relief is only ${energyAt(140)} m`);
+});
+
+test('nothing can trap the jelly: no slope in any biome is steeper than the course can pull it up', () => {
+  // The pull that keeps the jelly moving is NUDGE_ACCEL; gravity on a slope is
+  // g x slope. Check every metre of valley floor through all five biomes.
+  const climbable = NUDGE_ACCEL / GRAVITY;
+  const STEP = 0.5, ACROSS = [-18, -12, -6, 0, 6, 12, 18];
+  let steepest = 0;
+  for (let s = 0; s < BIOME_LENGTH * BIOME_COUNT; s += 1) {
+    for (const offset of ACROSS) {
+      const x = courseCenter(s) + offset;
+      // Travel is toward larger s, so a positive rise here is uphill.
+      steepest = Math.max(steepest, (terrainHeight(x, -(s + STEP)) - terrainHeight(x, -s)) / STEP);
+    }
+  }
+  assert.ok(steepest < climbable * 0.8, `an uphill of ${steepest} against a climbable ${climbable}`);
+});
+
+test('holding S through every biome, the jelly is never held up', () => {
+  const SLOW = MIN_SPEED * 0.8, MAX_SLOW_SECONDS = 1.5, SECONDS = 150;
+  for (let biome = 0; biome < BIOME_COUNT; biome++) {
+    const ball = createBall();
+    const start = BIOME_LENGTH * biome + 150;
+    ball.z = -start; ball.x = courseCenter(start); ball.y = terrainHeight(ball.x, ball.z) + ball.radius;
+    let slowFor = 0, longest = 0;
+    for (let i = 0; i < SECONDS * PHYSICS_HZ; i++) {
+      ball.radius = START_RADIUS; ball.wornOut = false;
+      stepBall(ball, BRAKE, PHYSICS_STEP);
+      slowFor = Math.hypot(ball.vx, ball.vz) < SLOW ? slowFor + PHYSICS_STEP : 0;
+      longest = Math.max(longest, slowFor);
+    }
+    assert.ok(longest < MAX_SLOW_SECONDS, `${BIOMES[biome].name}: stayed under ${SLOW} m/s for ${longest} s`);
+    assert.ok(-ball.z - start > SECONDS * MIN_SPEED * 0.5, `${BIOMES[biome].name}: only advanced ${-ball.z - start} m`);
+  }
 });

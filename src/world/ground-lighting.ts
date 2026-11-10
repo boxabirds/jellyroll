@@ -4,7 +4,7 @@
  * The ball position is in render space (see render-origin.ts).
  */
 import * as THREE from 'three/webgpu';
-import { exp, float, mix, positionWorld, smoothstep, step, uniform, vec3 } from 'three/tsl';
+import { abs, exp, float, fract, mix, positionWorld, smoothstep, step, time, uniform, vec3 } from 'three/tsl';
 import type Node from 'three/src/nodes/core/Node.js';
 import { START_RADIUS } from '../game/tuning.ts';
 
@@ -23,6 +23,13 @@ const CAUSTIC_GAIN = 1.1;
 /** Darkening where the body nearly touches the ground. */
 const CONTACT_REACH = 0.55;
 const CONTACT_STRENGTH = 0.5;
+/** The magnet's reach, drawn on the ground: a ring at its edge and ripples running inward. */
+const MAGNET_RING_WIDTH = 0.35;
+const MAGNET_RIPPLE_WIDTH = 0.6;
+const MAGNET_RIPPLE_RATE = 0.9;
+const MAGNET_RIPPLE_STRENGTH = 0.55;
+const MAGNET_BRIGHTEN = 0.9;
+const MAGNET_COLOR = new THREE.Color('#bfe9ff');
 
 export type GroundLighting = {
   readonly ballCenter: { value: THREE.Vector3 };
@@ -32,6 +39,11 @@ export type GroundLighting = {
   readonly ballRadiusNode: Node<'float'>;
   /** Follows the mix of colours the jelly has absorbed. */
   readonly jellyTint: { value: THREE.Color };
+  /** Reach of an active magnet from the jelly's centre, and how strongly to draw it (0 when off). */
+  readonly magnetReach: { value: number };
+  readonly magnetStrength: { value: number };
+  readonly magnetReachNode: Node<'float'>;
+  readonly magnetStrengthNode: Node<'float'>;
   readonly toLightNode: Node<'vec3'>;
   readonly jellyTintNode: Node<'color'>;
 };
@@ -40,7 +52,13 @@ export function createGroundLighting(toLight: THREE.Vector3, jellyTint: THREE.Co
   const ballCenterNode = uniform(new THREE.Vector3());
   const ballRadiusNode = uniform(START_RADIUS);
   const jellyTintNode = uniform(jellyTint.clone());
+  const magnetReachNode = uniform(1);
+  const magnetStrengthNode = uniform(0);
   return {
+    magnetReach: magnetReachNode,
+    magnetStrength: magnetStrengthNode,
+    magnetReachNode: magnetReachNode as unknown as Node<'float'>,
+    magnetStrengthNode: magnetStrengthNode as unknown as Node<'float'>,
     ballCenter: ballCenterNode,
     ballRadius: ballRadiusNode,
     ballRadiusNode: ballRadiusNode as unknown as Node<'float'>,
@@ -68,5 +86,14 @@ export function shadeUnderJelly(albedo: Node<'vec3'>, lighting: GroundLighting):
   const transmitted = tint.mul(float(SHADOW_TRANSMISSION).add(caustic));
   const gap = toBall.length().sub(radius);
   const contact = smoothstep(0, radius.mul(CONTACT_REACH), gap).oneMinus().mul(CONTACT_STRENGTH);
-  return albedo.mul(mix(vec3(1), transmitted, shadow)).mul(contact.oneMinus()) as unknown as Node<'vec3'>;
+  const shaded = albedo.mul(mix(vec3(1), transmitted, shadow)).mul(contact.oneMinus());
+  // Magnet field: a ring where its reach ends, and a ripple sweeping in toward the jelly.
+  const away = toBall.length();
+  const reach = lighting.magnetReachNode;
+  const ring = smoothstep(0, MAGNET_RING_WIDTH, abs(away.sub(reach))).oneMinus();
+  const sweep = reach.mul(fract(time.mul(MAGNET_RIPPLE_RATE)).oneMinus());
+  const ripple = smoothstep(0, MAGNET_RIPPLE_WIDTH, abs(away.sub(sweep))).oneMinus().mul(MAGNET_RIPPLE_STRENGTH);
+  const field = ring.add(ripple).mul(lighting.magnetStrengthNode).mul(MAGNET_BRIGHTEN);
+  const fieldColor = vec3(MAGNET_COLOR.r, MAGNET_COLOR.g, MAGNET_COLOR.b);
+  return mix(shaded, shaded.add(fieldColor), field.clamp(0, 1)) as unknown as Node<'vec3'>;
 }

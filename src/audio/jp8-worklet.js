@@ -1,6 +1,7 @@
 /**
- * AudioWorklet host for the JP-8 synth engine (Apache-2.0; the compiled
- * engine is vendored at src/audio/jp8/jp8_wasm_bg.wasm).
+ * AudioWorklet host for the JP-8 synth engine (Apache-2.0; the compiled engine
+ * is vendored at src/audio/jp8/jp8_wasm_bg.wasm). The game uses it for the
+ * background drone.
  *
  * This file is loaded as a worklet module, so it is plain JavaScript with no
  * imports. The WASM module is compiled on the main thread and handed over in

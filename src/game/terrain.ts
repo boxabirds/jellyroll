@@ -4,10 +4,14 @@
  * meshes and rock placement all sample this one function, so nothing can
  * disagree about where the ground is.
  */
+import { hillScale, mogulScale, widthScale } from './biomes.ts';
 import { hash2, smoothstep, valueNoise1, valueNoise2 } from './noise.ts';
 import {
   BOWL_CURVATURE,
   GRADIENT_STEP,
+  GROOVE_AMPLITUDE,
+  GROOVE_LENGTH,
+  GROOVE_WIDTH,
   HILL_AMPLITUDE,
   HILL_WAVELENGTH,
   KICKER_CHANCE,
@@ -20,11 +24,16 @@ import {
   KICKER_LENGTH,
   KICKER_MARGIN,
   KICKER_SPACING,
+  KNOLL_AMPLITUDE,
+  KNOLL_WAVELENGTH,
   MEAN_SLOPE,
   MEANDER_WAVES,
   MOGUL_AMPLITUDE,
   MOGUL_WAVELENGTH,
   RIPPLE_AMPLITUDE,
+  ROLLER_AMPLITUDE,
+  ROLLER_SKEW_WAVELENGTH,
+  ROLLER_WAVELENGTH,
   RIPPLE_WAVELENGTH,
   ROUGHNESS_WAVELENGTH,
   SLOPE_WAVES,
@@ -47,6 +56,9 @@ const SEED_ROUGHNESS = WORLD_SEED + 4;
 const SEED_KICKER_EXISTS = WORLD_SEED + 5;
 const SEED_KICKER_ALONG = WORLD_SEED + 6;
 const SEED_KICKER_ACROSS = WORLD_SEED + 7;
+const SEED_ROLLERS = WORLD_SEED + 8;
+const SEED_KNOLLS = WORLD_SEED + 9;
+const SEED_GROOVES = WORLD_SEED + 10;
 
 export type Vec3Like = { x: number; y: number; z: number };
 
@@ -68,13 +80,13 @@ export function courseDrift(s: number): number {
 }
 
 export function courseHalfWidth(s: number): number {
-  return VALLEY_HALF_WIDTH + VALLEY_HALF_WIDTH_SWING * Math.sin((s * TAU) / VALLEY_WIDTH_WAVELENGTH);
+  return (VALLEY_HALF_WIDTH + VALLEY_HALF_WIDTH_SWING * Math.sin((s * TAU) / VALLEY_WIDTH_WAVELENGTH)) * widthScale(s);
 }
 
-/** 0 on glassy stretches, 1 on the roughest ones. */
+/** 0 on glassy stretches, rising on rough ones; the biome scales how rough "rough" gets. */
 export function courseRoughness(s: number): number {
   const rough = valueNoise1(s / ROUGHNESS_WAVELENGTH, SEED_ROUGHNESS);
-  return rough * rough * smoothstep(START_SMOOTH_FROM, START_SMOOTH_TO, s);
+  return rough * rough * smoothstep(START_SMOOTH_FROM, START_SMOOTH_TO, s) * mogulScale(s);
 }
 
 /** Height of the valley bank `beyond` metres outside the valley half width. */
@@ -122,12 +134,17 @@ export function terrainHeight(x: number, z: number): number {
   // Past the ridge the land is distant scenery drawn with very coarse cells:
   // the bowl stops climbing and fine relief fades out, leaving broad hills.
   const bowlReach = Math.min(u, halfWidth + RIDGE_DISTANCE);
-  const rough = courseRoughness(s) * (1 - smoothstep(0, RIDGE_DISTANCE, beyond));
+  const inValley = 1 - smoothstep(0, RIDGE_DISTANCE, beyond);
+  const rough = courseRoughness(s) * inValley;
+  const hills = hillScale(s);
   return (
     descent(s) +
     BOWL_CURVATURE * bowlReach * bowlReach +
     bankHeight(beyond) +
-    HILL_AMPLITUDE * valueNoise2(x / HILL_WAVELENGTH, s / HILL_WAVELENGTH, SEED_HILLS) +
+    HILL_AMPLITUDE * hills * valueNoise2(x / HILL_WAVELENGTH, s / HILL_WAVELENGTH, SEED_HILLS) +
+    ROLLER_AMPLITUDE * hills * inValley * valueNoise2(x / ROLLER_SKEW_WAVELENGTH, s / ROLLER_WAVELENGTH, SEED_ROLLERS) +
+    KNOLL_AMPLITUDE * inValley * valueNoise2(x / KNOLL_WAVELENGTH, s / KNOLL_WAVELENGTH, SEED_KNOLLS) +
+    GROOVE_AMPLITUDE * inValley * valueNoise2(x / GROOVE_WIDTH, s / GROOVE_LENGTH, SEED_GROOVES) +
     MOGUL_AMPLITUDE * rough * valueNoise2(x / MOGUL_WAVELENGTH, s / MOGUL_WAVELENGTH, SEED_MOGULS) +
     RIPPLE_AMPLITUDE * rough * valueNoise2(x / RIPPLE_WAVELENGTH, s / RIPPLE_WAVELENGTH, SEED_RIPPLE) +
     kickerHeight(x, s)

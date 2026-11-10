@@ -3,6 +3,7 @@
  * from a hash. Physics and rendering both ask the same question, so the field
  * is infinite and needs no bookkeeping.
  */
+import { rockScale } from './biomes.ts';
 import { hash2, smoothstep, valueNoise1 } from './noise.ts';
 import { courseCenter, courseHalfWidth, kickerHeight, terrainHeight } from './terrain.ts';
 import {
@@ -42,7 +43,7 @@ export function rockCellIndex(coordinate: number): number {
 export function rockDensity(s: number): number {
   const patch = valueNoise1(s / ROCK_DENSITY_WAVELENGTH, SEED_DENSITY);
   const fraction = ROCK_MIN_DENSITY_FRACTION + (1 - ROCK_MIN_DENSITY_FRACTION) * patch;
-  return ROCK_MAX_DENSITY * fraction * smoothstep(ROCK_FREE_UNTIL, ROCK_FULL_DENSITY_AT, s);
+  return Math.min(1, ROCK_MAX_DENSITY * fraction * rockScale(s)) * smoothstep(ROCK_FREE_UNTIL, ROCK_FULL_DENSITY_AT, s);
 }
 
 /**

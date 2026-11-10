@@ -23,9 +23,18 @@ and `src/render/jelly-looks.ts` re-expresses the `layered` and `findBit`
 patterns of its `scene.frag` in TSL, evaluated on the skin instead of
 raymarched. Merging conserves volume as there (`r = cbrt(r1³ + r2³)`).
 
-Sound is played on the owner's JP-8 engine (Apache-2.0):
-`src/audio/jp8/jp8_wasm_bg.wasm` is its compiled engine, unmodified, with its
-licence alongside; `src/audio/jp8-worklet.js` is a new host for it.
+Ground textures for the ice, dunes, scree and lava biomes are from ambientCG
+(https://ambientcg.com), CC0 1.0; `src/assets/ground/README.md` lists the
+assets.
+
+Sound:
+- effects are synthesised with the sample generator of ZzFX v1.4.0 by Frank
+  Force (https://github.com/KilledByAPixel/ZzFX, MIT), vendored at
+  `src/audio/zzfx/zzfx-synth.js` with its licence alongside. The header of
+  that file lists the two changes made to it;
+- the background drone is the owner's JP-8 synth engine (Apache-2.0), vendored
+  as its compiled WASM, unmodified, at `src/audio/jp8/jp8_wasm_bg.wasm` with
+  its licence alongside, and hosted by `src/audio/jp8-worklet.js`.
 
 Everything else (terrain, physics, wobble, rocks, camera, HUD) is new.
 

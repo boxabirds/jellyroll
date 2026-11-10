@@ -4,12 +4,14 @@
  * construction; a recycled chunk just has its vertex buffers rewritten.
  */
 import * as THREE from 'three/webgpu';
-import { attribute, mix, normalMap, positionWorld, texture, vec2, vec3 } from 'three/tsl';
+import { attribute, mix, normalMap, positionWorld, sin, smoothstep as smoothstepNode, texture, time, vec2, vec3 } from 'three/tsl';
 import type Node from 'three/src/nodes/core/Node.js';
+import { BIOME_COUNT, BIOME_LENGTH, biomeOfStretch, biomeStretch } from '../game/biomes.ts';
 import { smoothstep, valueNoise1, valueNoise2 } from '../game/noise.ts';
 import { createRock, rockCellIndex, rockInCell } from '../game/rocks.ts';
 import { courseCenter, courseHalfWidth, kickerHeight, terrainHeight } from '../game/terrain.ts';
 import { GRADIENT_STEP, KICKER_HEIGHT, WORLD_SEED } from '../game/tuning.ts';
+import { GROUND_LOOKS, type GroundLook, type GroundTextures } from './biome-looks.ts';
 import { shadeUnderJelly, type GroundLighting } from './ground-lighting.ts';
 
 // --- Grid -------------------------------------------------------------------
@@ -37,31 +39,48 @@ const CHUNK_POOL = CHUNKS_AHEAD + CHUNKS_BEHIND + 1;
 export const VIEW_DISTANCE = CHUNKS_AHEAD * CHUNK_LENGTH;
 const UNASSIGNED = Number.NaN;
 
-// --- Grass material -----------------------------------------------------------
-/** REBASE_DISTANCE is a multiple of both tile sizes. */
-const GRASS_TILE = 0.6;
-const GRASS_MACRO_TILE = 40;
-/** Mean luminance of the grass albedo, used to turn the macro sample into a gain. */
-const GRASS_MEAN_LUMA = 0.11;
-const GRASS_MACRO_STRENGTH = 0.55;
-const GRASS_NORMAL_STRENGTH = 0.9;
-const GRASS_MIN_ROUGHNESS = 0.62;
-const GRASS_SPECULAR = 0.16;
-const GRASS_ANISOTROPY = 8;
-const DIRT_COLOR = new THREE.Color('#8a6a48');
+// --- Ground material ---------------------------------------------------------
+/** Every biome's texture is also sampled this large, to break up its repeat. The origin hop is a multiple. */
+const MACRO_TILE = 40;
+const GROUND_SPECULAR = 0.16;
 const LUMA_WEIGHTS = [0.2126, 0.7152, 0.0722] as const;
+/**
+ * The per-vertex blend between two biomes is soft; these edges sharpen it in
+ * the shader so the ground changes in patches with crisp-ish borders rather
+ * than as a 200 m cross-fade.
+ */
+const BLEND_EDGE_FROM = 0.34;
+const BLEND_EDGE_TO = 0.66;
+/** Emission-map brightness at which a vein starts to glow, and at which it glows fully. */
+const GLOW_FROM_HEAT = 0.3;
+const GLOW_FULL_HEAT = 0.75;
+/** Molten ground breathes: fraction of the glow that pulses, how fast, and how the phase drifts across the valley. */
+const GLOW_PULSE = 0.25;
+const GLOW_PULSE_RATE = 1.3;
+const GLOW_PULSE_PER_METRE = 0.2;
 
-// --- Per-vertex tint -----------------------------------------------------------
-const SEED_BIOME = WORLD_SEED + 21;
+// --- Per-vertex data --------------------------------------------------------------
+const SEED_VARIATION = WORLD_SEED + 21;
 const SEED_PATCH = WORLD_SEED + 22;
-const BIOME_WAVELENGTH = 700;
+const SEED_EDGE_BROAD = WORLD_SEED + 23;
+const SEED_EDGE_FINE = WORLD_SEED + 24;
+/** The ground wanders between a biome's two tints over this distance. */
+const VARIATION_WAVELENGTH = 700;
 const PATCH_WAVELENGTH = 55;
 const PATCH_STRENGTH = 0.18;
-const LUSH_TINT = [0.55, 0.86, 0.5] as const;
-const DRY_TINT = [0.95, 0.92, 0.5] as const;
 /** Banks darken toward this multiplier over WALL_SHADE_DISTANCE metres. */
 const WALL_SHADE = 0.72;
 const WALL_SHADE_DISTANCE = 30;
+/**
+ * A biome boundary is not a straight line across the valley: it wanders by
+ * up to EDGE_BROAD + EDGE_FINE metres, in tongues and patches. Together with
+ * EDGE_BAND that keeps the whole change inside the 200 m transition.
+ */
+const EDGE_BROAD = 40;
+const EDGE_BROAD_WAVELENGTH = 55;
+const EDGE_FINE = 10;
+const EDGE_FINE_WAVELENGTH = 9;
+const EDGE_BAND = 50;
 /** Rock shadow patches: offset and size in rock radii, and darkness. */
 const ROCK_SHADOW_OFFSET = 0.9;
 const ROCK_SHADOW_INNER = 0.7;
@@ -69,39 +88,60 @@ const ROCK_SHADOW_OUTER = 2.3;
 const ROCK_SHADOW_STRENGTH = 0.55;
 /** A shadow never reaches further than one rock cell from its rock's cell. */
 const ROCK_SHADOW_CELL_REACH = 1;
+/** Per vertex: shade, tint variation, blend toward the next biome, bare-dirt amount. */
 const TINT_SIZE = 4;
+const SHADE = 0;
+const VARIATION = 1;
+const BLEND = 2;
+const DIRT = 3;
 
-export type GrassTextures = { base: THREE.Texture; normal: THREE.Texture; roughness: THREE.Texture };
-
-export async function loadGrassTextures(): Promise<GrassTextures> {
-  const loader = new THREE.TextureLoader();
-  const [base, normal, roughness] = await Promise.all([
-    new URL('../assets/grass_texture/grass_base.jpg', import.meta.url).href,
-    new URL('../assets/grass_texture/grass_normal.jpg', import.meta.url).href,
-    new URL('../assets/grass_texture/grass_roughness.jpg', import.meta.url).href,
-  ].map(url => loader.loadAsync(url)));
-  base.colorSpace = THREE.SRGBColorSpace;
-  for (const map of [base, normal, roughness]) {
-    map.wrapS = map.wrapT = THREE.RepeatWrapping;
-    map.anisotropy = GRASS_ANISOTROPY;
-  }
-  return { base, normal, roughness };
+/**
+ * Keeps only the brightest veins of an emission map. The lava texture glows
+ * all over; cooled rock with molten cracks reads better and leaves the jelly
+ * and the embers something to stand out against.
+ */
+function hottest(emission: Node<'vec3'>) {
+  const heat = emission.dot(vec3(...LUMA_WEIGHTS));
+  return emission.mul(smoothstepNode(GLOW_FROM_HEAT, GLOW_FULL_HEAT, heat));
 }
 
-function createGrassMaterial(textures: GrassTextures, lighting: GroundLighting) {
-  const material = new THREE.MeshPhysicalNodeMaterial({ metalness: 0, roughness: 1, specularIntensity: GRASS_SPECULAR });
-  const uv = positionWorld.xz.div(GRASS_TILE);
-  const detail = texture(textures.base, uv).rgb;
-  // The same map sampled far larger breaks up the visible repeat of the detail tile.
-  const macroLuma = texture(textures.base, positionWorld.xz.div(GRASS_MACRO_TILE)).rgb.dot(vec3(...LUMA_WEIGHTS));
-  const macro = mix(1, macroLuma.div(GRASS_MEAN_LUMA), GRASS_MACRO_STRENGTH);
-  const tint = attribute('tint', 'vec4');
-  const grass = detail.mul(macro).mul(tint.rgb);
-  const dirt = vec3(DIRT_COLOR.r, DIRT_COLOR.g, DIRT_COLOR.b).mul(macro);
-  const albedo = mix(grass, dirt, tint.a) as unknown as Node<'vec3'>;
+/** One biome's ground at this fragment, before it is blended with its neighbour. */
+function groundLayer(look: GroundLook, maps: GroundTextures, variation: Node<'float'>) {
+  const uv = positionWorld.xz.div(look.tile);
+  const macroLuma = texture(maps.base, positionWorld.xz.div(MACRO_TILE)).rgb.dot(vec3(...LUMA_WEIGHTS));
+  const macro = mix(1, macroLuma.div(look.meanLuma), look.macroStrength);
+  const tint = mix(vec3(...look.tintA), vec3(...look.tintB), variation);
+  const dirt = new THREE.Color(look.dirt);
+  return {
+    albedo: texture(maps.base, uv).rgb.mul(macro).mul(tint),
+    dirt: vec3(dirt.r, dirt.g, dirt.b).mul(macro),
+    normal: normalMap(texture(maps.normal, uv), vec2(look.normalStrength, look.normalStrength)),
+    roughness: texture(maps.roughness, uv).r.mul(look.roughnessScale).clamp(look.minRoughness, 1),
+    glow: maps.emission ? hottest(texture(maps.emission, uv).rgb as unknown as Node<'vec3'>).mul(look.emissionGain) : vec3(0),
+  };
+}
+
+/**
+ * The ground of one stretch of the sequence: biome `from` turning into biome
+ * `to`. Only two biomes can ever meet, so each material samples just two sets
+ * of maps, and a chunk simply uses the material of the stretch it starts in.
+ */
+function createGroundMaterial(from: number, to: number, textures: readonly GroundTextures[], lighting: GroundLighting) {
+  const material = new THREE.MeshPhysicalNodeMaterial({ metalness: 0, roughness: 1, specularIntensity: GROUND_SPECULAR });
+  const data = attribute('tint', 'vec4');
+  const variation = data.y as unknown as Node<'float'>;
+  const a = groundLayer(GROUND_LOOKS[from], textures[from], variation);
+  const b = groundLayer(GROUND_LOOKS[to], textures[to], variation);
+  const blend = smoothstepNode(BLEND_EDGE_FROM, BLEND_EDGE_TO, data.z);
+  const ground = mix(a.albedo, b.albedo, blend).mul(data.x);
+  const albedo = mix(ground, mix(a.dirt, b.dirt, blend), data.w) as unknown as Node<'vec3'>;
   material.colorNode = shadeUnderJelly(albedo, lighting);
-  material.normalNode = normalMap(texture(textures.normal, uv), vec2(GRASS_NORMAL_STRENGTH, GRASS_NORMAL_STRENGTH));
-  material.roughnessNode = texture(textures.roughness, uv).r.max(GRASS_MIN_ROUGHNESS);
+  material.normalNode = mix(a.normal, b.normal, blend).normalize();
+  material.roughnessNode = mix(a.roughness, b.roughness, blend);
+  if (textures[from].emission || textures[to].emission) {
+    const pulse = sin(time.mul(GLOW_PULSE_RATE).add(positionWorld.x.mul(GLOW_PULSE_PER_METRE))).mul(GLOW_PULSE).add(1 - GLOW_PULSE);
+    material.emissiveNode = mix(a.glow, b.glow, blend).mul(pulse).mul(data.x);
+  }
   return material;
 }
 
@@ -119,14 +159,15 @@ type Chunk = {
 export class TerrainMesh {
   readonly group = new THREE.Group();
   private readonly chunks: Chunk[] = [];
-  private readonly material: THREE.MeshPhysicalNodeMaterial;
+  /** One material per stretch of the biome sequence: biome i turning into biome i + 1. */
+  private readonly materials: THREE.MeshPhysicalNodeMaterial[];
   private readonly indexAttribute: THREE.BufferAttribute;
   private readonly rock = createRock();
   private readonly shadowDirectionX: number;
   private readonly shadowDirectionZ: number;
 
-  constructor(textures: GrassTextures, lighting: GroundLighting, toLight: THREE.Vector3) {
-    this.material = createGrassMaterial(textures, lighting);
+  constructor(textures: readonly GroundTextures[], lighting: GroundLighting, toLight: THREE.Vector3) {
+    this.materials = Array.from({ length: BIOME_COUNT }, (_, from) => createGroundMaterial(from, (from + 1) % BIOME_COUNT, textures, lighting));
     // Shadows fall on the far side of a rock from the light.
     const horizontal = Math.hypot(toLight.x, toLight.z) || 1;
     this.shadowDirectionX = -toLight.x / horizontal;
@@ -157,9 +198,25 @@ export class TerrainMesh {
     }
   }
 
+  /**
+   * Only the first stretch's material is on screen at the start. Show a hidden
+   * chunk in each of the others so their shaders are compiled behind the
+   * loading card, not as a hitch at the first sight of each new biome.
+   * Call the returned function once compilation is done.
+   */
+  warmMaterials() {
+    const extras = this.materials.map(material => {
+      const mesh = new THREE.Mesh(this.chunks[0].mesh.geometry, material);
+      mesh.frustumCulled = false;
+      this.group.add(mesh);
+      return mesh;
+    });
+    return () => { for (const mesh of extras) this.group.remove(mesh); };
+  }
+
   dispose() {
     for (const chunk of this.chunks) chunk.mesh.geometry.dispose();
-    this.material.dispose();
+    for (const material of this.materials) material.dispose();
   }
 
   private createChunk(uvs: THREE.BufferAttribute): Chunk {
@@ -173,7 +230,7 @@ export class TerrainMesh {
     geometry.setAttribute('tint', new THREE.BufferAttribute(tints, TINT_SIZE).setUsage(THREE.DynamicDrawUsage));
     geometry.setAttribute('uv', uvs);
     geometry.setIndex(this.indexAttribute);
-    const mesh = new THREE.Mesh(geometry, this.material);
+    const mesh = new THREE.Mesh(geometry, this.materials[0]);
     // Chunks are rewritten in place and always near the camera; a stale
     // bounding sphere would cull the ground out from under the jelly.
     mesh.frustumCulled = false;
@@ -185,6 +242,11 @@ export class TerrainMesh {
   private fill(chunk: Chunk, index: number) {
     const { positions, normals, tints, rowOriginX } = chunk;
     const startS = index * CHUNK_LENGTH;
+    // The whole chunk is drawn as the stretch it starts in. Rows that lie past
+    // the end of that stretch are simply fully the next biome.
+    const stretch = biomeStretch(startS);
+    const boundary = (stretch + 1) * BIOME_LENGTH;
+    chunk.mesh.material = this.materials[biomeOfStretch(stretch)];
     let p = 0, t = 0;
     for (let row = 0; row <= CHUNK_ROWS; row++) {
       const s = startS + row * TERRAIN_CELL;
@@ -194,7 +256,7 @@ export class TerrainMesh {
       // the shared row between two chunks is computed identically by both.
       const originX = Math.round(centre / TERRAIN_CELL) * TERRAIN_CELL;
       rowOriginX[row] = originX;
-      const dryness = valueNoise1(s / BIOME_WAVELENGTH, SEED_BIOME);
+      const variation = valueNoise1(s / VARIATION_WAVELENGTH, SEED_VARIATION);
       for (let column = 0; column <= CHUNK_COLUMNS; column++) {
         const x = originX + COLUMN_OFFSETS[column];
         const h = terrainHeight(x, z);
@@ -207,11 +269,13 @@ export class TerrainMesh {
 
         const patch = 1 + PATCH_STRENGTH * valueNoise2(x / PATCH_WAVELENGTH, s / PATCH_WAVELENGTH, SEED_PATCH);
         const beyond = Math.max(0, Math.abs(x - centre) - halfWidth);
-        const shade = patch * (1 - (1 - WALL_SHADE) * smoothstep(0, WALL_SHADE_DISTANCE, beyond));
-        tints[t] = (LUSH_TINT[0] + (DRY_TINT[0] - LUSH_TINT[0]) * dryness) * shade;
-        tints[t + 1] = (LUSH_TINT[1] + (DRY_TINT[1] - LUSH_TINT[1]) * dryness) * shade;
-        tints[t + 2] = (LUSH_TINT[2] + (DRY_TINT[2] - LUSH_TINT[2]) * dryness) * shade;
-        tints[t + 3] = Math.min(1, kickerHeight(x, s) / KICKER_HEIGHT);
+        const wander =
+          EDGE_BROAD * valueNoise2(x / EDGE_BROAD_WAVELENGTH, s / EDGE_BROAD_WAVELENGTH, SEED_EDGE_BROAD) +
+          EDGE_FINE * valueNoise2(x / EDGE_FINE_WAVELENGTH, s / EDGE_FINE_WAVELENGTH, SEED_EDGE_FINE);
+        tints[t + SHADE] = patch * (1 - (1 - WALL_SHADE) * smoothstep(0, WALL_SHADE_DISTANCE, beyond));
+        tints[t + VARIATION] = variation;
+        tints[t + BLEND] = smoothstep(boundary - EDGE_BAND, boundary + EDGE_BAND, s + wander);
+        tints[t + DIRT] = Math.min(1, kickerHeight(x, s) / KICKER_HEIGHT);
         t += TINT_SIZE;
       }
     }
@@ -256,7 +320,7 @@ export class TerrainMesh {
             const dx = rowOriginX[row] + COLUMN_OFFSETS[column] - shadowX;
             const shade = 1 - ROCK_SHADOW_STRENGTH * (1 - smoothstep(inner, outer, Math.hypot(dx, ds)));
             const t = (row * (CHUNK_COLUMNS + 1) + column) * TINT_SIZE;
-            tints[t] *= shade; tints[t + 1] *= shade; tints[t + 2] *= shade;
+            tints[t + SHADE] *= shade;
           }
         }
       }
@@ -304,8 +368,8 @@ function buildUvs(): Float32Array {
   let i = 0;
   for (let row = 0; row <= CHUNK_ROWS; row++) {
     for (let column = 0; column <= CHUNK_COLUMNS; column++) {
-      uvs[i++] = COLUMN_OFFSETS[column] / GRASS_TILE;
-      uvs[i++] = (-row * TERRAIN_CELL) / GRASS_TILE;
+      uvs[i++] = COLUMN_OFFSETS[column];
+      uvs[i++] = -row * TERRAIN_CELL;
     }
   }
   return uvs;

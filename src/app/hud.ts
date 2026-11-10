@@ -1,13 +1,21 @@
 /** The few numbers on screen: the score (distance covered), speed, the jelly's size, and the best score. */
+import { BIOMES, biomeBlend, biomeOfStretch, biomeStretch, dominantBiome, wearScale } from '../game/biomes.ts';
 import { ballSpeed, type Ball } from '../game/physics.ts';
-import { MIN_RADIUS, START_RADIUS } from '../game/tuning.ts';
+import { KMH_PER_MS, MIN_RADIUS, START_RADIUS } from '../game/tuning.ts';
 
 const METRES_PER_KILOMETRE = 1000;
-const KMH_PER_MS = 3.6;
 const REFRESH_SECONDS = 0.1;
 const CENTIMETRES_PER_METRE = 100;
 /** Below this fraction of the way from gone to fresh, the size readout warns. */
 const LOW_SIZE_FRACTION = 0.35;
+const BANNER_SECONDS = 3.5;
+
+/** The blended wear rate at `s` without the per-loop increase, to recover that increase from wearScale. */
+function blendedBase(s: number) {
+  const stretch = biomeStretch(s);
+  const from = BIOMES[biomeOfStretch(stretch)].wear, to = BIOMES[biomeOfStretch(stretch + 1)].wear;
+  return from + (to - from) * biomeBlend(s, stretch);
+}
 const BEST_STORAGE_KEY = 'jellyland.best-distance';
 
 export class Hud {
@@ -19,6 +27,14 @@ export class Hud {
   private readonly merges = document.querySelector<HTMLElement>('#merges')!;
   private readonly air = document.querySelector<HTMLElement>('#air')!;
   private readonly finalAir = document.querySelector<HTMLElement>('#final-air')!;
+  private readonly biome = document.querySelector<HTMLElement>('#biome')!;
+  private readonly banner = document.querySelector<HTMLElement>('#biome-banner')!;
+  private readonly bannerName = document.querySelector<HTMLElement>('#biome-banner-name')!;
+  private readonly bannerWear = document.querySelector<HTMLElement>('#biome-banner-wear')!;
+  private shownBiome = -1;
+  private bannerSeconds = 0;
+  private readonly magnet = document.querySelector<HTMLElement>('#magnet')!;
+  private readonly magnetSeconds = document.querySelector<HTMLElement>('#magnet-seconds')!;
   private readonly wornOut = document.querySelector<HTMLElement>('#worn-out')!;
   private readonly finalDistance = document.querySelector<HTMLElement>('#final-distance')!;
   private bestDistance = readBest();
@@ -29,8 +45,10 @@ export class Hud {
     this.hints.classList.toggle('shown', helpShown);
     const distance = ball.distance, speed = ballSpeed(ball);
     this.sinceRefresh += dt;
+    this.bannerSeconds = Math.max(0, this.bannerSeconds - dt);
     if (this.sinceRefresh < REFRESH_SECONDS) return;
     this.sinceRefresh = 0;
+    this.showBiome(-ball.z);
     if (distance > this.bestDistance) this.bestDistance = distance;
     this.distance.textContent = formatDistance(distance);
     this.speed.textContent = Math.round(speed * KMH_PER_MS).toString();
@@ -41,11 +59,30 @@ export class Hud {
     this.size.parentElement!.classList.toggle('low', life < LOW_SIZE_FRACTION);
     this.merges.textContent = ball.merges.toString();
     this.air.textContent = formatSeconds(ball.airSeconds);
+    this.magnet.classList.toggle('shown', ball.magnetSeconds > 0);
+    this.magnetSeconds.textContent = formatSeconds(ball.magnetSeconds);
     this.wornOut.classList.toggle('shown', ball.wornOut);
     if (ball.wornOut) {
       this.finalDistance.textContent = formatDistance(distance);
       this.finalAir.textContent = formatSeconds(ball.airSeconds);
     }
+  }
+
+  /** Keep the biome label current, and announce each new biome for a few seconds as the jelly crosses into it. */
+  private showBiome(s: number) {
+    const index = dominantBiome(s);
+    const wear = `wear ×${wearScale(s).toFixed(1)}`;
+    this.biome.textContent = `${BIOMES[index].name} · ${wear}`;
+    if (index !== this.shownBiome) {
+      // The very first biome is not news; every later one is.
+      if (this.shownBiome !== -1) {
+        this.bannerName.textContent = BIOMES[index].name;
+        this.bannerWear.textContent = `wear ×${(BIOMES[index].wear * (wearScale(s) / blendedBase(s))).toFixed(1)}`;
+        this.bannerSeconds = BANNER_SECONDS;
+      }
+      this.shownBiome = index;
+    }
+    this.banner.classList.toggle('shown', this.bannerSeconds > 0);
   }
 
   /** Persist the best distance; called on restart and when the page is hidden. */

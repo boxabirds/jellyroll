@@ -17,7 +17,7 @@ import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { Ball, Pickup } from '../game/physics.ts';
 import { START_RADIUS } from '../game/tuning.ts';
 import type { Wobble } from '../game/wobble.ts';
-import { START_SWEET, SWEETS } from '../render/colors.ts';
+import { START_COLOR, sweetColor } from '../render/colors.ts';
 import { lookShading } from '../render/jelly-looks.ts';
 import { createJellyMaterial } from '../render/jelly-material.ts';
 
@@ -164,8 +164,8 @@ export class JellyBall {
 
   /** A fresh, single-coloured jelly with nothing absorbed. */
   reset() {
-    this.baseDeep.copy(SWEETS[START_SWEET].deep);
-    this.baseTint.copy(SWEETS[START_SWEET].tint);
+    this.baseDeep.copy(START_COLOR.deep);
+    this.baseTint.copy(START_COLOR.tint);
     for (const lobe of this.lobes) { lobe.weight.value = 0; lobe.flash.value = 0; lobe.bump = 0; lobe.bumpVelocity = 0; lobe.launch = 0; }
     this.nextLobe = 0;
     this.shownRadius = START_RADIUS;
@@ -186,9 +186,9 @@ export class JellyBall {
     this.fold(lobe, BASE_FOLD * lobe.weight.value);
     this.inverseSpin.set(ball.qx, ball.qy, ball.qz, ball.qw).invert();
     lobe.direction.set(pickup.dx, pickup.dy, pickup.dz).applyQuaternion(this.inverseSpin);
-    lobe.deep.copy(SWEETS[pickup.color].deep);
-    lobe.tint.copy(SWEETS[pickup.color].tint);
-    lobe.deep2.copy(SWEETS[pickup.color2].deep);
+    lobe.deep.copy(sweetColor(pickup.kind, pickup.color).deep);
+    lobe.tint.copy(sweetColor(pickup.kind, pickup.color).tint);
+    lobe.deep2.copy(sweetColor(pickup.kind, pickup.color2).deep);
     lobe.look.value = pickup.look;
     lobe.seed.value = pickup.seed;
     lobe.weight.value = 1;

@@ -1,18 +1,44 @@
-/** A plain gradient sky whose horizon is the fog colour, so the hill dissolves into it. */
+/**
+ * A gradient sky whose horizon is the fog colour, so the hill dissolves into
+ * it, plus the sun. Colours and strengths come from the biome the jelly is in
+ * (biome-looks.ts) and change smoothly through a transition.
+ */
 import * as THREE from 'three/webgpu';
-import { color, normalWorldGeometry } from 'three/tsl';
+import { normalWorldGeometry, uniform } from 'three/tsl';
+import type { Atmosphere } from './biome-looks.ts';
 import { VIEW_DISTANCE } from './terrain-mesh.ts';
 
-const HORIZON_COLOR = '#d3ecf3';
-const ZENITH_COLOR = '#4d9bd6';
 /** Exponent below 1 keeps the pale band wide near the horizon. */
 const GRADIENT_EXPONENT = 0.55;
-/** Fog starts and ends at these fractions of the drawn distance. */
-const FOG_START = 0.5;
-const FOG_END = 0.97;
 
-export function applySky(scene: THREE.Scene) {
-  const height = normalWorldGeometry.y.max(0).pow(GRADIENT_EXPONENT);
-  scene.backgroundNode = height.mix(color(HORIZON_COLOR), color(ZENITH_COLOR));
-  scene.fog = new THREE.Fog(HORIZON_COLOR, VIEW_DISTANCE * FOG_START, VIEW_DISTANCE * FOG_END);
+export class Sky {
+  readonly sun = new THREE.DirectionalLight();
+  private readonly zenith = uniform(new THREE.Color());
+  private readonly horizon = uniform(new THREE.Color());
+  private readonly fog = new THREE.Fog(0, 1, 2);
+  private readonly scene: THREE.Scene;
+  private readonly renderer: THREE.WebGPURenderer;
+
+  /** @param toLight unit vector from the scene toward the key light */
+  constructor(scene: THREE.Scene, renderer: THREE.WebGPURenderer, toLight: THREE.Vector3) {
+    this.scene = scene;
+    this.renderer = renderer;
+    const height = normalWorldGeometry.y.max(0).pow(GRADIENT_EXPONENT);
+    scene.backgroundNode = height.mix(this.horizon, this.zenith);
+    scene.fog = this.fog;
+    this.sun.position.copy(toLight);
+    scene.add(this.sun);
+  }
+
+  apply(air: Atmosphere) {
+    this.zenith.value.copy(air.zenith);
+    this.horizon.value.copy(air.horizon);
+    this.fog.color.copy(air.horizon);
+    this.fog.near = VIEW_DISTANCE * air.fogStart;
+    this.fog.far = VIEW_DISTANCE * air.fogEnd;
+    this.sun.color.copy(air.sun);
+    this.sun.intensity = air.sunIntensity;
+    this.scene.environmentIntensity = air.ambient;
+    this.renderer.toneMappingExposure = air.exposure;
+  }
 }

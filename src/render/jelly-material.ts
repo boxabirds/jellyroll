@@ -45,12 +45,22 @@ export type JellyNodes = {
   glow?: Node<'vec3'>;
 };
 
-export function createJellyMaterial(nodes: JellyNodes) {
+/** Departures from the standard jelly, for things that are not quite jelly (snow, crystal). */
+export type JellyOptions = {
+  /** Share of light let through; the rest is scattered back as the body's own colour. */
+  transmission?: number;
+  roughness?: number;
+  /** Faceted rather than smooth. */
+  flatShading?: boolean;
+};
+
+export function createJellyMaterial(nodes: JellyNodes, options: JellyOptions = {}) {
+  const transmission = options.transmission ?? JELLY_TRANSMISSION;
   const material = new THREE.MeshPhysicalNodeMaterial({
-    roughness: JELLY_ROUGHNESS, metalness: 0, transmission: 1,
+    roughness: options.roughness ?? JELLY_ROUGHNESS, metalness: 0, transmission: 1,
     ior: JELLY_IOR, dispersion: JELLY_DISPERSION,
     clearcoat: JELLY_CLEARCOAT, clearcoatRoughness: JELLY_CLEARCOAT_ROUGHNESS, envMapIntensity: JELLY_ENV_INTENSITY,
-    transparent: false, side: THREE.FrontSide, flatShading: false,
+    transparent: false, side: THREE.FrontSide, flatShading: options.flatShading ?? false,
   });
   const diameter = nodes.radius.mul(2);
   // A view ray through a sphere travels a chord of 2R·cos(angle to the normal).
@@ -62,11 +72,11 @@ export function createJellyMaterial(nodes: JellyNodes) {
   const body = mix(nodes.tint, nodes.attenuation, BODY_COLOR_DEPTH);
   if (nodes.bit && nodes.bitColor) {
     material.colorNode = mix(body, nodes.bitColor, nodes.bit);
-    material.transmissionNode = nodes.bit.mul(BIT_OPACITY).oneMinus().mul(JELLY_TRANSMISSION);
+    material.transmissionNode = nodes.bit.mul(BIT_OPACITY).oneMinus().mul(transmission);
     if (nodes.glow) material.emissiveNode = nodes.glow as unknown as Node<'color'>;
   } else {
     material.colorNode = body;
-    material.transmissionNode = float(JELLY_TRANSMISSION);
+    material.transmissionNode = float(transmission);
   }
   return material;
 }

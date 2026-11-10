@@ -2,7 +2,7 @@
 
 Usage: uv run --with playwright scripts/drive.py <url> <out-dir> [script]
 The script is a comma-separated list of steps: `shot:name`, `zoom:name` (crop around the jelly), `wait:seconds`,
-`down:Key`, `up:Key`, `place:s/lateral/lift`, `resize:radius`, `snap` (print the debug snapshot).
+`down:Key`, `up:Key`, `place:s/lateral/lift`, `resize:radius`, `magnet` (switch the magnet on), `snap` (print the debug snapshot).
 """
 import json
 import sys
@@ -52,6 +52,8 @@ def main() -> int:
                 page.keyboard.up(arg)
             elif kind == "place":
                 page.evaluate(f"window.__jellyland.place({arg.replace('/', ',')})")
+            elif kind == "magnet":
+                page.evaluate("window.__jellyland.magnet()")
             elif kind == "resize":
                 page.evaluate(f"window.__jellyland.resize({arg})")
             elif kind == "snap":
