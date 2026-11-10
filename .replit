@@ -1,0 +1,13 @@
+# Development: `npm run dev` serves the game with hot reload.
+run = "npm install && npm run dev"
+modules = ["nodejs-22"]
+
+[[ports]]
+localPort = 5173
+externalPort = 80
+
+# Deployment: a static site. Build once, serve the dist folder.
+[deployment]
+deploymentTarget = "static"
+build = ["sh", "-c", "npm install && npm run build"]
+publicDir = "dist"

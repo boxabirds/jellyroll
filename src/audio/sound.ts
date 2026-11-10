@@ -250,7 +250,7 @@ export class JellySound {
 
   private async loadDrone(context: AudioContext, master: GainNode) {
     const [wasmModule] = await Promise.all([
-      WebAssembly.compileStreaming(fetch(jp8WasmUrl)),
+      compileWasm(jp8WasmUrl),
       context.audioWorklet.addModule(new URL('./jp8-worklet.js', import.meta.url)),
     ]);
     const drone = new AudioWorkletNode(context, DRONE_PROCESSOR, {
@@ -269,6 +269,15 @@ export class JellySound {
     drone.connect(droneGain).connect(master);
     this.drone = drone;
     this.state = 'ready';
+  }
+}
+
+/** Streaming compilation needs the host to serve .wasm as application/wasm; not every static host does. */
+async function compileWasm(url: string) {
+  try {
+    return await WebAssembly.compileStreaming(fetch(url));
+  } catch {
+    return WebAssembly.compile(await (await fetch(url)).arrayBuffer());
   }
 }
 

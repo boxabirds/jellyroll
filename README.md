@@ -54,6 +54,37 @@ Sound starts on your first key press.
 | `M` | mute |
 | `?` | show or hide the controls in the game |
 
+## Deploy
+
+A production build is plain static files: HTML, JavaScript, images and two
+small binaries. There is no server code.
+
+```sh
+npm install
+npm run build      # writes the site to dist/
+npm run preview    # optional: serve dist/ locally to check it
+```
+
+Upload the contents of `dist/` to any static host. Two things the host must do:
+
+- serve over **HTTPS** (WebGPU and audio worklets need a secure context;
+  `localhost` also counts);
+- nothing else. No special headers are needed, and asset paths are relative,
+  so the site works from a sub-folder as well as from the root.
+
+Needs Node 20.19 or newer (Node 22 recommended) to build.
+
+### Replit
+
+The repository includes a `.replit` file:
+
+- **Run** starts the dev server (`npm install && npm run dev`) on port 5173.
+- **Deploy** as a **Static** deployment: build command
+  `npm install && npm run build`, public directory `dist`.
+
+If Replit asks for these in its deployment form instead of reading the file,
+enter the same build command and public directory.
+
 ## How it is put together
 
 - `src/game/` is the whole simulation and has no rendering imports: the terrain
