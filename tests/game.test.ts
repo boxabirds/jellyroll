@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   BIOME_COUNT, BIOME_LENGTH, BIOME_TRANSITION, BIOMES, ICE, LAVA, MEADOW, biomeBlend, biomeStretch, collectibleKind, dominantBiome,
-  hillScale, steerScale, wearScale, widthScale,
+  hillScale, speedScale, steerScale, wearScale, widthScale,
 } from '../src/game/biomes.ts';
 import { KIND_NAMES, LOOK, mushroomCellIndex, mushroomInCell, createMushroom } from '../src/game/mushrooms.ts';
 import { LOOKS } from '../src/render/jelly-looks.ts';
@@ -12,7 +12,7 @@ import { createRock, rockCellIndex, rockInCell } from '../src/game/rocks.ts';
 import { courseCenter, courseHalfWidth, terrainHeight, terrainNormal } from '../src/game/terrain.ts';
 import {
   MUSHROOM_CELL, MUSHROOM_MAX_RADIUS, MUSHROOM_MIN_RADIUS, MAX_RADIUS, MEAN_SLOPE, MIN_RADIUS, MIN_SPEED, PHYSICS_HZ, PHYSICS_STEP,
-  RIDGE_DISTANCE, ROCK_CELL, START_RADIUS, KMH_PER_MS, MAX_SPEED, GRAVITY, NUDGE_ACCEL, ROLLER_WAVELENGTH, KNOLL_WAVELENGTH, MAGNET_RADIUS, MAGNET_SECONDS, MAGNET_SPACING,
+  RIDGE_DISTANCE, ROCK_CELL, START_RADIUS, KMH_PER_MS, MAX_SPEED, CRUISE_SPEED, GRAVITY, NUDGE_ACCEL, ROLLER_WAVELENGTH, KNOLL_WAVELENGTH, MAGNET_RADIUS, MAGNET_SECONDS, MAGNET_SPACING,
   MAGNET_FLOAT_HEIGHT, MUSHROOM_TOUCH,
 } from '../src/game/tuning.ts';
 import { createWobble, stepWobble } from '../src/game/wobble.ts';
@@ -243,7 +243,7 @@ test('a bigger jelly wears faster than a small one', () => {
   assert.ok(bigBefore - big.radius > smallBefore - small.radius);
 });
 
-test('top speed is 100 km/h: holding W gets close to it, nothing ever passes it, and nothing is skipped at speed', () => {
+test('the cap is 150 km/h and never passed; holding W gets close to it, coasting stays slow, and nothing is skipped at speed', () => {
   let fastest = 0, merges = 0;
   simulate(BOOST, LONG_RUN_SECONDS, ball => {
     const speed = ballSpeed(ball);
@@ -252,14 +252,46 @@ test('top speed is 100 km/h: holding W gets close to it, nothing ever passes it,
     assert.ok(speed <= MAX_SPEED * (1 + 1e-9), `${speed * KMH_PER_MS} km/h is over the limit`);
     assert.ok(terrainHeight(ball.x, ball.z) - ball.y < ball.radius, 'the jelly went through the ground at speed');
   }, true);
-  assert.equal(Math.round(MAX_SPEED * KMH_PER_MS), 100);
+  assert.equal(Math.round(MAX_SPEED * KMH_PER_MS), 150);
   assert.ok(fastest > MAX_SPEED * 0.9, `only reached ${fastest * KMH_PER_MS} km/h`);
   assert.ok(merges > 0, 'a fast jelly should still be able to merge with mushrooms it rolls through');
-  // Left alone, the jelly rolls well below the limit on average: W is what gets it there.
+  // Left alone, the jelly rolls well below cruise speed on average: W is what gets it there.
   let total = 0, steps = 0;
   simulate(COAST, RUN_SECONDS, ball => { total += ballSpeed(ball); steps++; }, true);
   const coasting = total / steps;
-  assert.ok(coasting < MAX_SPEED * 0.65, `coasting averaged ${coasting * KMH_PER_MS} km/h`);
+  assert.ok(coasting < CRUISE_SPEED * 0.65, `coasting averaged ${coasting * KMH_PER_MS} km/h`);
+});
+
+test('each loop of the biomes raises the minimum and default speeds by 20%', () => {
+  const loopMiddle = (loop: number) => loop * BIOME_COUNT * BIOME_LENGTH + BIOME_LENGTH / 2;
+  for (let loop = 0; loop < 3; loop++) {
+    assert.ok(Math.abs(speedScale(loopMiddle(loop)) - 1.2 ** loop) < 1e-9, `loop ${loop}: ${speedScale(loopMiddle(loop))}`);
+  }
+  // Blended across the boundary, not a step.
+  const boundary = BIOME_COUNT * BIOME_LENGTH;
+  assert.ok(Math.abs(speedScale(boundary - BIOME_TRANSITION) - 1) < 1e-9);
+  assert.ok(Math.abs(speedScale(boundary + BIOME_TRANSITION) - 1.2) < 1e-9);
+  assert.ok(speedScale(boundary) > 1.05 && speedScale(boundary) < 1.15);
+});
+
+test('the speed a jelly coasts at, and the slowest it can be braked to, rise with each loop', () => {
+  const meanSpeed = (loop: number, input: ControlInput) => {
+    const ball = createBall();
+    const start = loop * BIOME_COUNT * BIOME_LENGTH + BIOME_LENGTH / 4;
+    ball.z = -start; ball.x = courseCenter(start); ball.y = terrainHeight(ball.x, ball.z) + ball.radius + 0.1;
+    ball.vz = -MIN_SPEED * 1.2 ** loop;
+    let total = 0, steps = 0;
+    for (let i = 0; i < PHYSICS_HZ * 40; i++) {
+      ball.radius = START_RADIUS; ball.wornOut = false;
+      stepBall(ball, input, PHYSICS_STEP);
+      if (i > PHYSICS_HZ * 10) { total += Math.hypot(ball.vx, ball.vz); steps++; }
+    }
+    return total / steps;
+  };
+  for (const input of [COAST, BRAKE]) {
+    const first = meanSpeed(0, input), second = meanSpeed(1, input);
+    assert.ok(second > first * 1.12, `${JSON.stringify(input)}: ${second} vs ${first}`);
+  }
 });
 
 test('merging conserves volume when small and never exceeds the maximum size', () => {
@@ -301,9 +333,11 @@ test('mushrooms are plentiful, deterministic, varied, and sit in the valley', ()
 });
 
 test('rolling through mushrooms merges each one once, and every merge makes the jelly bigger', () => {
+  // Slower travel covers less ground per second, so this watches three times the 60 s used elsewhere.
+  const MERGE_RUN_SECONDS = RUN_SECONDS * 3;
   const seen = new Set<string>();
   let reported = 0, before = START_RADIUS;
-  const ball = simulate(COAST, RUN_SECONDS, b => {
+  const ball = simulate(COAST, MERGE_RUN_SECONDS, b => {
     if (b.pickupCount > 0) assert.ok(b.radius > before, `radius ${b.radius} after a merge, ${before} before`);
     before = b.radius;
     for (let i = 0; i < b.pickupCount; i++) {
@@ -313,7 +347,7 @@ test('rolling through mushrooms merges each one once, and every merge makes the 
       seen.add(`${p.seed}`);
     }
   }, true);
-  assert.ok(ball.merges > 5, `only ${ball.merges} merges in ${RUN_SECONDS} s of coasting`);
+  assert.ok(ball.merges > 5, `only ${ball.merges} merges in ${MERGE_RUN_SECONDS} s of coasting`);
   assert.equal(reported, ball.merges);
   assert.equal(seen.size, ball.merges, 'a mushroom was absorbed twice');
 });

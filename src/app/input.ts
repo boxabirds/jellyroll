@@ -21,6 +21,11 @@ export class Input {
   /** Whether the controls help is showing; "?" toggles it, Escape hides it. */
   helpShown = false;
   private readonly held = new Set<string>();
+  /** Touch stick, tilt and the touch jump button, merged with the keyboard in refresh(). */
+  private stickX = 0;
+  private stickY = 0;
+  private tiltX = 0;
+  private touchJump = false;
   private readonly onRestart: () => void;
   private readonly onMute: () => void;
   private readonly onGesture: () => void;
@@ -60,13 +65,36 @@ export class Input {
   /** A key released while the window is unfocused never sends keyup. */
   private readonly release = () => { this.held.clear(); this.refresh(); };
 
+  /** The on-screen stick: x is -1 (left) to 1 (right), y is -1 (brake) to 1 (accelerate). */
+  setStick(x: number, y: number) {
+    this.stickX = x; this.stickY = y;
+    this.used = true;
+    this.refresh();
+  }
+
+  /** Tilt steering, -1 to 1. Called every frame while tilt is on. */
+  setTilt(x: number) {
+    if (x === this.tiltX) return;
+    this.tiltX = x;
+    this.refresh();
+  }
+
+  /** The on-screen jump button. A fresh press counts as a tap even if it is released within a frame. */
+  setTouchJump(down: boolean) {
+    if (down && !this.touchJump) this.jumpPressed = true;
+    this.touchJump = down;
+    this.used = true;
+    this.refresh();
+  }
+
   private pressed(keys: readonly string[]) {
     return keys.some(key => this.held.has(key)) ? 1 : 0;
   }
 
   private refresh() {
-    this.control.throttle = this.pressed(ACCELERATE_KEYS) - this.pressed(DECELERATE_KEYS);
-    this.control.steer = this.pressed(RIGHT_KEYS) - this.pressed(LEFT_KEYS);
-    this.control.jump = this.held.has(JUMP_KEY);
+    const clamp = (value: number) => Math.max(-1, Math.min(1, value));
+    this.control.throttle = clamp(this.pressed(ACCELERATE_KEYS) - this.pressed(DECELERATE_KEYS) + this.stickY);
+    this.control.steer = clamp(this.pressed(RIGHT_KEYS) - this.pressed(LEFT_KEYS) + this.stickX + this.tiltX);
+    this.control.jump = this.held.has(JUMP_KEY) || this.touchJump;
   }
 }

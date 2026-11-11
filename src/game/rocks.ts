@@ -4,6 +4,7 @@
  * is infinite and needs no bookkeeping.
  */
 import { rockScale } from './biomes.ts';
+import { createHazardSample, hazardAt } from './hazards.ts';
 import { hash2, smoothstep, valueNoise1 } from './noise.ts';
 import { courseCenter, courseHalfWidth, kickerHeight, terrainHeight } from './terrain.ts';
 import {
@@ -28,6 +29,8 @@ const SEED_OFFSET_Z = WORLD_SEED + 13;
 const SEED_RADIUS = WORLD_SEED + 14;
 const SEED_LOOK = WORLD_SEED + 15;
 const SEED_DENSITY = WORLD_SEED + 16;
+
+const holeScratch = createHazardSample();
 
 export type Rock = { x: number; y: number; z: number; radius: number; look: number };
 
@@ -59,6 +62,8 @@ export function rockInCell(cellX: number, cellZ: number, out: Rock): boolean {
   const beyond = Math.abs(x - courseCenter(s)) - courseHalfWidth(s);
   if (beyond > RIDGE_DISTANCE * ROCK_BANK_LIMIT) return false;
   if (kickerHeight(x, s) > ROCK_KICKER_CLEARANCE) return false;
+  // Rocks do not stand in the holes.
+  if (hazardAt(x - courseCenter(s), s, courseHalfWidth(s), holeScratch) > 0) return false;
   const size = hash2(cellX, cellZ, SEED_RADIUS);
   const radius = ROCK_MIN_RADIUS + (ROCK_MAX_RADIUS - ROCK_MIN_RADIUS) * size * size;
   out.x = x;

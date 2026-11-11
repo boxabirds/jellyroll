@@ -28,6 +28,9 @@ Ground textures for the ice, dunes, scree and lava biomes are from ambientCG
 assets.
 
 Sound:
+- merge and landing sounds are recorded CC0 samples from Kenney (kenney.nl) and
+  OpenGameArt, in `src/audio/samples/`; `src/audio/samples/CREDITS.md` lists every pack,
+  its source and licence evidence;
 - effects are synthesised with the sample generator of ZzFX v1.4.0 by Frank
   Force (https://github.com/KilledByAPixel/ZzFX, MIT), vendored at
   `src/audio/zzfx/zzfx-synth.js` with its licence alongside. The header of

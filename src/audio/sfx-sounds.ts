@@ -486,6 +486,45 @@ export function emberHiss(size: number, climbStep = 0, random: Random = Math.ran
   ];
 }
 
+// ---- seed packet: a rattle of seeds, a whoosh as they fly, then a patter of little pops as they sprout ----
+const RATTLE_TICKS = 11;
+const RATTLE_SECONDS = 0.24;
+const RATTLE_TICK_SECONDS = 0.012;
+const RATTLE_FILTER = 3000;
+const RATTLE_GAIN = 0.32;
+const WHOOSH_HZ = 260;
+const WHOOSH_RISE_RATIO = 2.6;
+const WHOOSH_SECONDS = 0.34;
+const WHOOSH_START_S = 0.04;
+const WHOOSH_GAIN = 0.2;
+const SPROUT_POPS = 7;
+const SPROUT_FIRST_S = 0.62;
+const SPROUT_LAST_S = 1.25;
+const SPROUT_POP_GAIN = 0.4;
+/** Each pop is a small plop, this much higher than the last on average (semitones per pop, kept small). */
+const SPROUT_CLIMB_SEMITONES = 1;
+
+/** A seed packet being picked up and sprayed: rattle, whoosh, then the seeds sprouting. */
+export function seedSpray(random: Random = Math.random): Layer[] {
+  const layers: Layer[] = [];
+  for (let i = 0; i < RATTLE_TICKS; i++) {
+    layers.push(noiseLayer(random() * RATTLE_SECONDS, RATTLE_TICK_SECONDS, RATTLE_FILTER * jitter(random, 0.3) * -1, RATTLE_GAIN * jitter(random, 0.3), CHIME_ATTACK_S, 0, 0));
+  }
+  const pitch = WHOOSH_HZ * jitter(random, PITCH_JITTER);
+  layers.push({
+    start: WHOOSH_START_S,
+    gain: WHOOSH_GAIN,
+    zzfx: { frequency: pitch, shape: SHAPE_SINE, attack: 0.03, release: WHOOSH_SECONDS, ...dropSweep(pitch, WHOOSH_RISE_RATIO, 0, WHOOSH_SECONDS) },
+  });
+  for (let i = 0; i < SPROUT_POPS; i++) {
+    const at = SPROUT_FIRST_S + (SPROUT_LAST_S - SPROUT_FIRST_S) * ((i + random() * 0.6) / SPROUT_POPS);
+    for (const layer of mergePlop(random(), i * SPROUT_CLIMB_SEMITONES / CLIMB_SEMITONES, random, SPROUT_POP_GAIN)) {
+      layers.push({ ...layer, start: layer.start + at });
+    }
+  }
+  return layers;
+}
+
 type MergeSound = (size: number, climbStep: number, random: Random) => Layer[];
 const MERGE_SOUNDS: MergeSound[] = [];
 MERGE_SOUNDS[MEADOW] = (size, climbStep, random) => mergePlop(size, climbStep, random);

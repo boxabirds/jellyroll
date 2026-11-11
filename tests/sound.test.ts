@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { DRONE_NOTES, DRONE_VELOCITY, JP8, JP8_PARAM_COUNT, droneCutoff, dronePatch } from '../src/audio/drone.ts';
 import { renderLayers } from '../src/audio/sfx-render.ts';
-import { jumpSquish, landingSquish, magnetPickup, mergeSound, type Layer } from '../src/audio/sfx-sounds.ts';
+import { jumpSquish, landingSquish, magnetPickup, mergeSound, seedSpray, type Layer } from '../src/audio/sfx-sounds.ts';
 import { BIOME_COUNT, DUNES, ICE, LAVA, MEADOW, SCREE } from '../src/game/biomes.ts';
 import { KIND_NAMES } from '../src/game/mushrooms.ts';
 import { MAX_SPEED } from '../src/game/tuning.ts';
@@ -158,4 +158,17 @@ test('the drone fades in, holds steady, never clips, and brightens with speed', 
   const dull = crossings(slow, 5, 9), bright = crossings(fast, 5, 9);
   assert.ok(bright > dull * 1.5, `fast ${bright} vs slow ${dull} crossings/s`);
   console.log(`drone level: slow ${settled.toFixed(3)}, fast ${peakOf(fast, 5, 9).toFixed(3)}`);
+});
+
+test('the seed packet rattles, whooshes, then pops as the seeds sprout: audible, clean, and over within two seconds', () => {
+  const spray = render(seedSpray(seeded(9)));
+  assert.ok(peak(spray) > 0.2 && peak(spray) < 1, `peaks at ${peak(spray)}`);
+  assert.ok(seconds(spray) > 1 && seconds(spray) < 2, `lasts ${seconds(spray)} s`);
+  assert.ok(spray.every(Number.isFinite));
+  // Quiet gap between the whoosh and the first sprout pops is fine, but the pops must be there.
+  const SPROUT_FROM = 0.62;
+  const late = new Float32Array(spray.subarray(Math.floor(SPROUT_FROM * SAMPLE_RATE)));
+  assert.ok(peak(late) > 0.1, `the sprouting pops are missing (peak ${peak(late)})`);
+  const early = new Float32Array(spray.subarray(0, Math.floor(0.3 * SAMPLE_RATE)));
+  assert.ok(crossingRate(early) > crossingRate(merge(MEADOW, MEDIUM)) * 1.2, 'the rattle should be brighter than a plop');
 });

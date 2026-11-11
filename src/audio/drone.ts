@@ -5,7 +5,7 @@
  * rushing air and crawling sounds muffled.
  */
 
-import { MAX_SPEED } from '../game/tuning.ts';
+import { CRUISE_SPEED } from '../game/tuning.ts';
 
 export const JP8_PARAM_COUNT = 68;
 
@@ -24,7 +24,7 @@ const CHORUS_BOTH = 3;
 /** Filter cutoff (Hz) at a crawl and at full rush, and the speed (m/s) that counts as full rush. */
 const CUTOFF_SLOW = 320;
 const CUTOFF_FAST = 3200;
-const RUSH_SPEED = MAX_SPEED;
+const RUSH_SPEED = CRUISE_SPEED;
 
 /** Two detuned saws through a soft filter, with very slow attack and a drifting LFO. */
 const PATCH: readonly (readonly [number, number])[] = [

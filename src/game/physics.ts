@@ -4,8 +4,11 @@
  * ball itself. The jelly wobble is layered on top in wobble.ts.
  */
 import { mushroomCellIndex, mushroomInCell, createMushroom, createMushroomLedger, isMushroomTaken, resetMushroomLedger, takeMushroom, type MushroomLedger } from './mushrooms.ts';
-import { steerScale, wearScale } from './biomes.ts';
+import { speedScale, steerScale, wearScale } from './biomes.ts';
+import { createHazardSample, hazardAt, type HazardSample } from './hazards.ts';
 import { createMagnet, magnetInSegment, magnetSegment } from './magnets.ts';
+import { createSeedPacket, seedPacketInSegment, seedPacketSegment } from './seed-packets.ts';
+import { advanceSeeds, clearSeeds, createSeedField, plantSeeds, sproutScale, type SeedField } from './seeds.ts';
 import { clamp } from './noise.ts';
 import { createRock, rockCellIndex, rockInCell } from './rocks.ts';
 import { courseCenter, courseDrift, courseHalfWidth, terrainHeight, terrainNormal } from './terrain.ts';
@@ -18,11 +21,22 @@ import {
   BRAKE_ACCEL,
   BRAKE_FADE_RANGE,
   DRAG,
+  TUCKED_DRAG,
+  TUCK_FALL_RATE,
+  TUCK_RISE_RATE,
   GRAVITY,
   GROUND_CONTACT_SLOP,
   GROUND_RESTITUTION,
+  HAZARD_EFFECTS,
+  HAZARD_STAB_KEEP,
+  HAZARD_STAB_SPACING,
+  HAZARD_VENT_DUTY,
+  HAZARD_VENT_HEIGHT,
+  HAZARD_VENT_PHASE_PER_METRE,
+  HAZARD_VENT_RATE,
   HEADING_MIN_SPEED,
   MAGNET_PICKUP_RADIUS,
+  SEED_PACKET_PICKUP_RADIUS,
   MAGNET_RADIUS,
   MAGNET_SECONDS,
   JUMP_BUFFER_SECONDS,
@@ -55,6 +69,8 @@ export type ControlInput = { throttle: number; steer: number; jump?: boolean };
 export type Pickup = {
   /** Unit direction from the jelly's centre to the mushroom, world axes, and how far away it was. */
   dx: number; dy: number; dz: number; distance: number;
+  /** The jelly's radius just before this merge, and the volume the merge added to it. */
+  jellyRadius: number; volume: number;
   radius: number; kind: number; look: number; color: number; color2: number; seed: number;
 };
 
@@ -84,6 +100,16 @@ export type Ball = {
   airSeconds: number;
   /** Seconds since last touching the ground, and since jump was last pressed. */
   airTime: number; jumpQueued: number; jumpHeld: boolean;
+  /** 0..1: how far W has eased the air drag down toward TUCKED_DRAG. */
+  tuck: number;
+  /** Seconds the run has lasted (drives the pulsing of steam vents). */
+  clock: number;
+  /** The hole under the jelly: how deep in it (0 outside) and of what kind (a biome index). */
+  hazardDepth: number; hazardKind: number;
+  /** Shards that tore a piece off during the last step, and whether a vent threw the jelly this step. */
+  stabs: number; vented: boolean;
+  /** Metres rolled through shards since the last stab, and whether a vent is lifting the jelly now. */
+  stabMetres: number; venting: boolean;
   /** Mushrooms absorbed during the last step: the first `pickupCount` entries are valid. */
   pickups: Pickup[]; pickupCount: number;
   /** Mushrooms absorbed this run. */
@@ -94,6 +120,11 @@ export type Ball = {
   magnetPicked: boolean;
   /** Stretch of the course whose magnet was last picked up, so it is not there twice. */
   magnetTakenSegment: number;
+  /** True on the step a seed packet was picked up, and the stretch whose packet was last taken. */
+  seedsSprayed: boolean;
+  seedTakenSegment: number;
+  /** Seeds in flight and the collectibles they have become. */
+  seeds: SeedField;
   ledger: MushroomLedger;
 };
 
@@ -113,6 +144,7 @@ const normal = { x: 0, y: 1, z: 0 };
 const rock = createRock();
 const mushroom = createMushroom();
 const magnet = createMagnet();
+const seedPacket = createSeedPacket();
 const NEVER = Number.POSITIVE_INFINITY;
 const NO_SEGMENT = -1;
 
@@ -122,9 +154,11 @@ export function createBall(): Ball {
     nx: 0, ny: 1, nz: 0, grounded: false,
     wx: 0, wy: 0, wz: 0, qx: 0, qy: 0, qz: 0, qw: 1,
     impact: 0, rockImpact: 0, jumped: false, distance: 0, airSeconds: 0,
-    airTime: NEVER, jumpQueued: NEVER, jumpHeld: false,
-    pickups: Array.from({ length: MAX_PICKUPS_PER_STEP }, () => ({ dx: 0, dy: 1, dz: 0, distance: 0, radius: 0, kind: 0, look: 0, color: 0, color2: 0, seed: 0 })),
+    airTime: NEVER, jumpQueued: NEVER, jumpHeld: false, tuck: 0,
+    clock: 0, hazardDepth: 0, hazardKind: 0, stabs: 0, vented: false, stabMetres: 0, venting: false,
+    pickups: Array.from({ length: MAX_PICKUPS_PER_STEP }, () => ({ dx: 0, dy: 1, dz: 0, distance: 0, jellyRadius: 0, volume: 0, radius: 0, kind: 0, look: 0, color: 0, color2: 0, seed: 0 })),
     pickupCount: 0, merges: 0, magnetSeconds: 0, magnetPicked: false, magnetTakenSegment: NO_SEGMENT,
+    seedsSprayed: false, seedTakenSegment: NO_SEGMENT, seeds: createSeedField(),
     ledger: createMushroomLedger(),
   };
   resetBall(ball);
@@ -143,9 +177,11 @@ export function resetBall(ball: Ball): void {
   ball.wx = 0; ball.wy = 0; ball.wz = 0;
   ball.qx = 0; ball.qy = 0; ball.qz = 0; ball.qw = 1;
   ball.impact = 0; ball.rockImpact = 0; ball.jumped = false; ball.distance = 0; ball.airSeconds = 0;
-  ball.airTime = NEVER; ball.jumpQueued = NEVER; ball.jumpHeld = false;
+  ball.airTime = NEVER; ball.jumpQueued = NEVER; ball.jumpHeld = false; ball.tuck = 0;
+  ball.clock = 0; ball.hazardDepth = 0; ball.hazardKind = 0; ball.stabs = 0; ball.vented = false; ball.stabMetres = 0; ball.venting = false;
   ball.pickupCount = 0; ball.merges = 0;
   ball.magnetSeconds = 0; ball.magnetPicked = false; ball.magnetTakenSegment = NO_SEGMENT;
+  ball.seedsSprayed = false; ball.seedTakenSegment = NO_SEGMENT; clearSeeds(ball.seeds);
   resetMushroomLedger(ball.ledger);
 }
 
@@ -158,8 +194,12 @@ export function stepBall(ball: Ball, input: ControlInput, dt: number): void {
   ball.rockImpact = 0;
   ball.jumped = false;
   ball.pickupCount = 0;
+  ball.stabs = 0;
+  ball.vented = false;
   ball.magnetPicked = false;
+  ball.seedsSprayed = false;
   if (ball.wornOut) return;
+  advanceSeeds(ball.seeds, dt, ball.z);
   // At speed, one step could carry the jelly clean through a mushroom or a rock. The step is cut into pieces short enough that
   // nothing can be skipped; events accumulate across the pieces.
   const pieces = clamp(Math.ceil((ballSpeed(ball) * dt) / MAX_TRAVEL_PER_PIECE), 1, MAX_PIECES_PER_STEP);
@@ -177,6 +217,8 @@ function advance(ball: Ball, input: ControlInput, dt: number): void {
   const courseX = drift / courseLength;
   const courseZ = -1 / courseLength;
   const horizontalSpeed = Math.hypot(ball.vx, ball.vz);
+  const speedFactor = speedScale(s);
+  const minSpeed = MIN_SPEED * speedFactor;
   let forwardX = courseX;
   let forwardZ = courseZ;
   if (horizontalSpeed > HEADING_MIN_SPEED) {
@@ -201,8 +243,8 @@ function advance(ball: Ball, input: ControlInput, dt: number): void {
     ax += forwardX * throttle * BOOST_ACCEL * authority;
     az += forwardZ * throttle * BOOST_ACCEL * authority;
   } else if (throttle < 0) {
-    // Braking fades to nothing at MIN_SPEED: the jelly can slow but never stop.
-    const fade = clamp((horizontalSpeed - MIN_SPEED) / BRAKE_FADE_RANGE, 0, 1);
+    // Braking fades to nothing at the minimum speed: the jelly can slow but never stop.
+    const fade = clamp((horizontalSpeed - minSpeed) / BRAKE_FADE_RANGE, 0, 1);
     ax += forwardX * throttle * BRAKE_ACCEL * fade * authority;
     az += forwardZ * throttle * BRAKE_ACCEL * fade * authority;
   }
@@ -211,12 +253,16 @@ function advance(ball: Ball, input: ControlInput, dt: number): void {
   // This applies in the air too: a head-on rock hit pops the jelly upward, and
   // waiting for it to land before recovering would leave it hanging.
   const alongCourse = ball.vx * courseX + ball.vz * courseZ;
-  if (alongCourse < MIN_SPEED) {
+  if (alongCourse < minSpeed) {
     ax += courseX * NUDGE_ACCEL;
     az += courseZ * NUDGE_ACCEL;
   }
 
-  const dragScale = DRAG * ballSpeed(ball);
+  const tuckTarget = Math.max(0, throttle);
+  const tuckRate = tuckTarget > ball.tuck ? TUCK_RISE_RATE : TUCK_FALL_RATE;
+  ball.tuck += clamp(tuckTarget - ball.tuck, -tuckRate * dt, tuckRate * dt);
+  const drag = DRAG + (TUCKED_DRAG - DRAG) * ball.tuck;
+  const dragScale = (drag / (speedFactor * speedFactor)) * ballSpeed(ball);
   ball.vx += (ax - ball.vx * dragScale) * dt;
   ball.vy += (-GRAVITY - ball.vy * dragScale) * dt;
   ball.vz += (az - ball.vz * dragScale) * dt;
@@ -238,10 +284,13 @@ function advance(ball: Ball, input: ControlInput, dt: number): void {
   collideWithRocks(ball, dt);
   jump(ball, input.jump === true, dt);
   collectMagnet(ball, dt);
+  collectSeedPacket(ball);
   absorbMushrooms(ball);
   if (ball.grounded) wear(ball, Math.hypot(ball.vx, ball.vy, ball.vz) * dt);
   else ball.airSeconds += dt;
+  applyHole(ball, dt, minSpeed);
   roll(ball, dt);
+  ball.clock += dt;
 
   if (-ball.z > ball.distance) ball.distance = -ball.z;
 }
@@ -308,7 +357,7 @@ function collideWithRocks(ball: Ball, dt: number): void {
       // A slow jelly leaning on the uphill face of a rock is being pushed
       // straight into it by the course's pull, and can balance there for
       // seconds. Slide it off round whichever side it is already nearer.
-      if (Math.hypot(ball.vx, ball.vz) < MIN_SPEED) {
+      if (Math.hypot(ball.vx, ball.vz) < MIN_SPEED * speedScale(-ball.z)) {
         const drift = courseDrift(-ball.z);
         const courseLength = Math.hypot(drift, 1);
         const rightX = 1 / courseLength, rightZ = drift / courseLength;
@@ -359,6 +408,59 @@ function jump(ball: Ball, held: boolean, dt: number): void {
   ball.airTime = NEVER;
 }
 
+const hole: HazardSample = createHazardSample();
+
+/**
+ * What the ground does to a jelly in a hole. Ponds and lava slow it and melt it, shards tear
+ * pieces off, vents burn it and throw it up in pulses. Nothing is instant: each only takes a
+ * little at a time, and none of them can slow the jelly below its minimum speed.
+ */
+function applyHole(ball: Ball, dt: number, minSpeed: number): void {
+  const s = -ball.z;
+  const depth = hazardAt(ball.x - courseCenter(s), s, courseHalfWidth(s), hole);
+  ball.hazardDepth = depth;
+  if (depth === 0) { ball.venting = false; return; }
+  ball.hazardKind = hole.kind;
+  const effect = HAZARD_EFFECTS[hole.kind];
+  const height = ball.y - terrainHeight(ball.x, ball.z) - ball.radius;
+  if (ball.grounded) {
+    if (effect.slow > 0) {
+      const speed = Math.hypot(ball.vx, ball.vz);
+      if (speed > minSpeed) {
+        const keep = Math.max(minSpeed, speed * Math.exp(-effect.slow * depth * dt)) / speed;
+        ball.vx *= keep; ball.vz *= keep;
+      }
+    }
+    if (effect.melt > 0) meltBy(ball, effect.melt * depth * dt);
+    if (effect.stab > 0) {
+      ball.stabMetres += Math.hypot(ball.vx, ball.vz) * dt * depth;
+      if (ball.stabMetres >= HAZARD_STAB_SPACING) {
+        ball.stabMetres -= HAZARD_STAB_SPACING;
+        ball.stabs++;
+        ball.vx *= HAZARD_STAB_KEEP; ball.vz *= HAZARD_STAB_KEEP;
+        meltBy(ball, effect.stab);
+      }
+    }
+  }
+  if (effect.lift > 0 && height < HAZARD_VENT_HEIGHT) {
+    const phase = ball.clock * HAZARD_VENT_RATE + s * HAZARD_VENT_PHASE_PER_METRE;
+    const lifting = phase - Math.floor(phase) < HAZARD_VENT_DUTY;
+    if (lifting) {
+      ball.vy += effect.lift * depth * dt;
+      if (!ball.venting) ball.vented = true;
+    }
+    ball.venting = lifting;
+  } else {
+    ball.venting = false;
+  }
+}
+
+/** Take a fraction of the jelly's radius away. */
+function meltBy(ball: Ball, fraction: number): void {
+  ball.radius -= ball.radius * fraction;
+  if (ball.radius <= MIN_RADIUS) { ball.radius = MIN_RADIUS; ball.wornOut = true; }
+}
+
 /** Rolling scuffs the jelly away; how fast depends on the biome under it. `metres` is ground distance covered. */
 export function wear(ball: Ball, metres: number): void {
   ball.radius -= (WEAR_PER_METRE + WEAR_PER_METRE_PER_RADIUS * ball.radius) * wearScale(-ball.z) * metres;
@@ -401,6 +503,43 @@ function collectMagnet(ball: Ball, dt: number): void {
   grantMagnet(ball);
 }
 
+/**
+ * Spray a packet's worth of seeds down the valley from the jelly. `key` makes
+ * the pattern repeatable: a packet always sprays the same way.
+ */
+export function spraySeeds(ball: Ball, key: number): void {
+  plantSeeds(ball.seeds, ball.x, ball.y + ball.radius, ball.z, key);
+  ball.seedsSprayed = true;
+}
+
+/** Pick up a floating seed packet if the jelly rolls or flies through it. */
+function collectSeedPacket(ball: Ball): void {
+  const segment = seedPacketSegment(-ball.z);
+  if (segment === ball.seedTakenSegment || !seedPacketInSegment(segment, seedPacket)) return;
+  const reach = ball.radius + SEED_PACKET_PICKUP_RADIUS;
+  const dx = seedPacket.x - ball.x, dy = seedPacket.y - ball.y, dz = seedPacket.z - ball.z;
+  if (dx * dx + dy * dy + dz * dz >= reach * reach) return;
+  ball.seedTakenSegment = segment;
+  spraySeeds(ball, segment);
+}
+
+/** Record a merge: fill the next pickup, grow the jelly, and count it. */
+function takePickup(
+  ball: Ball, ox: number, oy: number, oz: number, distanceSquared: number,
+  radius: number, kind: number, look: number, color: number, color2: number, seed: number,
+): void {
+  const distance = Math.sqrt(distanceSquared) || 1;
+  const pickup = ball.pickups[ball.pickupCount++];
+  pickup.dx = ox / distance; pickup.dy = oy / distance; pickup.dz = oz / distance; pickup.distance = distance;
+  pickup.radius = radius; pickup.kind = kind; pickup.look = look;
+  pickup.color = color; pickup.color2 = color2; pickup.seed = seed;
+  const before = ball.radius;
+  grow(ball, radius);
+  pickup.jellyRadius = before;
+  pickup.volume = ball.radius ** 3 - before ** 3;
+  ball.merges++;
+}
+
 function absorbMushrooms(ball: Ball): void {
   // With a magnet the jelly reaches well beyond its own skin.
   const pull = magnetActive(ball) ? MAGNET_RADIUS : 0;
@@ -419,14 +558,20 @@ function absorbMushrooms(ball: Ball): void {
       if (distanceSquared >= reach * reach) continue;
       if (isMushroomTaken(ball.ledger, cellX + dx, cellZ + dz)) continue;
       takeMushroom(ball.ledger, cellX + dx, cellZ + dz);
-      const distance = Math.sqrt(distanceSquared) || 1;
-      const pickup = ball.pickups[ball.pickupCount++];
-      pickup.dx = ox / distance; pickup.dy = oy / distance; pickup.dz = oz / distance; pickup.distance = distance;
-      pickup.radius = mushroom.radius; pickup.kind = mushroom.kind; pickup.look = mushroom.look;
-      pickup.color = mushroom.color; pickup.color2 = mushroom.color2; pickup.seed = mushroom.seed;
-      grow(ball, mushroom.radius);
-      ball.merges++;
+      takePickup(ball, ox, oy, oz, distanceSquared, mushroom.radius, mushroom.kind, mushroom.look, mushroom.color, mushroom.color2, mushroom.seed);
     }
+  }
+  // Collectibles grown from seeds: only once landed, and as big as they have sprouted so far.
+  for (const planted of ball.seeds.items) {
+    if (!planted.alive || ball.pickupCount === MAX_PICKUPS_PER_STEP) continue;
+    const grown = sproutScale(planted);
+    if (grown <= 0) continue;
+    const ox = planted.x - ball.x, oy = planted.y - ball.y, oz = planted.z - ball.z;
+    const reach = ball.radius + pull + planted.radius * grown * MUSHROOM_TOUCH;
+    const distanceSquared = ox * ox + oy * oy + oz * oz;
+    if (distanceSquared >= reach * reach) continue;
+    planted.alive = false;
+    takePickup(ball, ox, oy, oz, distanceSquared, planted.radius, planted.kind, planted.look, planted.color, planted.color2, planted.seed);
   }
 }
 

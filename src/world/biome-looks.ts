@@ -87,6 +87,32 @@ export async function loadGroundTextures(): Promise<GroundTextures[]> {
   }));
 }
 
+// --- Holes ----------------------------------------------------------------------
+
+/** How the inside of one kind of hole is drawn, by the biome whose hole it is. */
+export type HoleLook = {
+  /** Surface colour (linear), roughness, and a glow added on top (zero for none). */
+  readonly color: readonly [number, number, number];
+  readonly roughness: number;
+  readonly glow: readonly [number, number, number];
+  /** How fast the surface shimmers, and how much of its brightness the shimmer moves. */
+  readonly shimmerRate: number;
+  readonly shimmerDepth: number;
+};
+
+const HOLES: HoleLook[] = [];
+/** Pond: dark green-blue water, glassy. */
+HOLES[MEADOW] = { color: [0.02, 0.16, 0.2], roughness: 0.05, glow: [0, 0, 0], shimmerRate: 1.6, shimmerDepth: 0.3 };
+/** Ice: pale blue shards over deep cold water. */
+HOLES[ICE] = { color: [0.03, 0.2, 0.5], roughness: 0.12, glow: [0, 0, 0], shimmerRate: 0.8, shimmerDepth: 0.35 };
+/** Oasis: bright turquoise water. */
+HOLES[DUNES] = { color: [0.02, 0.42, 0.4], roughness: 0.04, glow: [0, 0, 0], shimmerRate: 1.9, shimmerDepth: 0.3 };
+/** Steam vent: scorched dark rock with a dull red glow. */
+HOLES[SCREE] = { color: [0.02, 0.02, 0.022], roughness: 0.9, glow: [0.012, 0.002, 0.001], shimmerRate: 2.2, shimmerDepth: 0.5 };
+/** Lava: bright molten orange. */
+HOLES[LAVA] = { color: [0.05, 0.01, 0], roughness: 0.7, glow: [0.3, 0.03, 0], shimmerRate: 1.4, shimmerDepth: 0.4 };
+export const HOLE_LOOKS: readonly HoleLook[] = HOLES;
+
 // --- Light and air --------------------------------------------------------------
 
 export type Atmosphere = {
@@ -156,6 +182,6 @@ export function rockColorAt(s: number, out: THREE.Color): THREE.Color {
   return out.copy(ROCKS[biomeOfStretch(stretch)]).lerp(ROCKS[biomeOfStretch(stretch + 1)], biomeBlend(s, stretch));
 }
 
-if (GROUND.length !== BIOME_COUNT || ATMOSPHERES.length !== BIOME_COUNT || ROCKS.length !== BIOME_COUNT) {
+if (GROUND.length !== BIOME_COUNT || HOLES.length !== BIOME_COUNT || ATMOSPHERES.length !== BIOME_COUNT || ROCKS.length !== BIOME_COUNT) {
   throw new Error('Every biome needs a ground look, an atmosphere and a rock colour');
 }

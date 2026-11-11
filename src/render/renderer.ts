@@ -51,10 +51,13 @@ export function drawingBufferDpr(width: number, height: number, devicePixelRatio
   return Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
 }
 
-export function resizeView(renderer: THREE.WebGPURenderer, camera: THREE.PerspectiveCamera) {
+/** Phones have far less GPU than the pixel count of their screens suggests, so they draw fewer pixels. */
+export const MOBILE_MAX_DEVICE_PIXEL_RATIO = 1.5;
+
+export function resizeView(renderer: THREE.WebGPURenderer, camera: THREE.PerspectiveCamera, maxDpr = MAX_DEVICE_PIXEL_RATIO) {
   if (window.innerWidth <= 0 || window.innerHeight <= 0) return;
   const width = Math.max(1, window.innerWidth), height = Math.max(1, window.innerHeight);
-  renderer.setDrawingBufferSize(width, height, drawingBufferDpr(width, height, window.devicePixelRatio));
+  renderer.setDrawingBufferSize(width, height, drawingBufferDpr(width, height, window.devicePixelRatio, maxDpr));
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
 }

@@ -11,12 +11,14 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <aside class="readout" aria-label="Run statistics">
     <div class="stat primary"><span id="distance">0 m</span><label>score</label></div>
     <div class="stat"><span><b id="speed">0</b> km/h</span><label>speed</label></div>
-    <div class="stat"><span id="air">0.0 s</span><label>air time</label></div>
-    <div class="stat"><span id="size">120 cm</span><label>jelly</label></div>
-    <div class="stat"><span id="merges">0</span><label>merged</label></div>
-    <div class="stat"><span id="best">0 m</span><label>best</label></div>
+    <div class="stat optional"><span id="air">0.0 s</span><label>air time</label></div>
+    <div class="stat"><span id="size">– cm</span><label>jelly</label></div>
+    <div class="stat optional"><span id="merges">0</span><label>merged</label></div>
+    <div class="stat optional"><span id="best">0 m</span><label>best</label></div>
   </aside>
   <div id="biome-banner" class="biome-banner" role="status" aria-live="polite"><b id="biome-banner-name"></b><span id="biome-banner-wear"></span></div>
+  <div id="alarm" class="alarm" aria-hidden="true"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <div id="magnet" class="power-up" role="status" aria-live="polite"><span class="power-up-icon" aria-hidden="true"></span>magnet <b id="magnet-seconds">0.0 s</b></div>
   <footer id="hints" class="hints" aria-label="Keyboard controls">
     <span><kbd>W</kbd> faster</span><span><kbd>S</kbd> slower</span>
@@ -24,7 +26,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <span><kbd class="wide">space</kbd> jump</span>
     <span class="separator"></span><span><kbd>R</kbd> restart</span><span><kbd>M</kbd> mute</span><span><kbd>?</kbd> hide</span>
   </footer>
-  <section id="worn-out" role="status" aria-live="polite"><div class="worn-card"><h2>Worn away.</h2><p>Score <b id="final-distance">0 m</b> · air time <b id="final-air">0.0 s</b></p><p>Merge with more mushrooms to roll further.</p><p><kbd class="wide">space</kbd> or <kbd>R</kbd> to roll again</p></div></section>
+  <section id="worn-out" role="status" aria-live="polite"><div class="worn-card"><h2>Worn away.</h2><p>Score <b id="final-distance">0 m</b> · air time <b id="final-air">0.0 s</b></p><p>Merge with more mushrooms to roll further.</p><p class="keys-only"><kbd class="wide">space</kbd> or <kbd>R</kbd> to roll again</p><p class="touch-only">Tap the jump button to roll again</p></div></section>
   <section id="loading" role="status" aria-live="polite"><div class="loading-card"><div class="jelly-mark"></div><h2>Nearly rolling.</h2><p id="load-message">Loading the game</p><pre id="fatal" hidden></pre><button id="retry" hidden>Try again</button></div></section>
 `;
 

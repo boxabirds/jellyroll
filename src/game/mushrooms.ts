@@ -4,6 +4,7 @@
  * like. The only state is the ledger of which ones the player has absorbed.
  */
 import { collectibleKind, collectibleScale, ICE, MEADOW, DUNES, SCREE, LAVA } from './biomes.ts';
+import { createHazardSample, hazardAt } from './hazards.ts';
 import { hash2, smoothstep, valueNoise2 } from './noise.ts';
 import { courseCenter, courseHalfWidth, terrainHeight } from './terrain.ts';
 import {
@@ -22,6 +23,7 @@ import {
   WORLD_SEED,
 } from './tuning.ts';
 
+const holeScratch = createHazardSample();
 const SEED_EXISTS = WORLD_SEED + 41;
 const SEED_OFFSET_X = WORLD_SEED + 42;
 const SEED_OFFSET_Z = WORLD_SEED + 43;
@@ -55,6 +57,12 @@ const KIND_LOOKS: readonly (readonly number[])[] = [];
 (KIND_LOOKS as number[][])[DUNES] = [LOOK.classic, LOOK.stripy, LOOK.spotty];
 (KIND_LOOKS as number[][])[SCREE] = [LOOK.classic, LOOK.glitter, LOOK.galaxy, LOOK.twoTone];
 (KIND_LOOKS as number[][])[LAVA] = [LOOK.classic, LOOK.golden, LOOK.swirly];
+
+/** One of the looks a kind of collectible comes in, chosen by `chance` (0..1). */
+export function pickLook(kind: number, chance: number): number {
+  const looks = KIND_LOOKS[kind];
+  return looks[Math.min(looks.length - 1, Math.floor(chance * looks.length))];
+}
 
 export type Mushroom = {
   x: number; y: number; z: number; radius: number;
@@ -90,6 +98,8 @@ export function mushroomInCell(cellX: number, cellZ: number, out: Mushroom): boo
   const s = -z;
   if (hash2(cellX, cellZ, SEED_EXISTS) >= mushroomDensity(x, s)) return false;
   if (Math.abs(x - courseCenter(s)) > courseHalfWidth(s) - MUSHROOM_EDGE_MARGIN) return false;
+  // Nothing grows in a hole.
+  if (hazardAt(x - courseCenter(s), s, courseHalfWidth(s), holeScratch) > 0) return false;
   // Squaring favours small mushrooms; the occasional big one is a prize.
   const size = hash2(cellX, cellZ, SEED_RADIUS);
   const radius = MUSHROOM_MIN_RADIUS + (MUSHROOM_MAX_RADIUS - MUSHROOM_MIN_RADIUS) * size * size;

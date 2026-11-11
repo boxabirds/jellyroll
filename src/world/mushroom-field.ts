@@ -5,8 +5,10 @@
  * with its own shape and finish; every instance carries its colours, look and
  * size as attributes, so one material per kind draws all its variety.
  *
- * Collectibles the jelly has just touched are not simply removed: for a moment
- * they are drawn again as "slurps", stretched and pulled in.
+ * Collectibles the jelly has touched are not simply removed: each stays in
+ * the batch as a merge in progress, flying in, pressing against the jelly,
+ * then sinking into it as it shrinks (see game/merge-timeline.ts). The jelly
+ * mesh draws the other half of the blend.
  */
 import * as THREE from 'three/webgpu';
 import { attribute, cos, instancedDynamicBufferAttribute, mix, positionGeometry, positionLocal, sin, time, vec3 } from 'three/tsl';
@@ -15,10 +17,12 @@ import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometr
 import { BIOME_COUNT, DUNES, ICE, LAVA, MEADOW, SCREE } from '../game/biomes.ts';
 import { createMushroom, isMushroomTaken, mushroomCellIndex, mushroomInCell, type MushroomLedger } from '../game/mushrooms.ts';
 import { smoothstep, valueNoise2 } from '../game/noise.ts';
-import type { Ball, Pickup } from '../game/physics.ts';
+import type { Merges } from '../game/merges.ts';
+import { sproutScale, type SeedField } from '../game/seeds.ts';
 import { courseCenter } from '../game/terrain.ts';
 import {
-  MUSHROOM_CELL, MUSHROOM_EDGE_MARGIN, MUSHROOM_REST_HEIGHT, VALLEY_HALF_WIDTH, VALLEY_HALF_WIDTH_SWING, WORLD_SEED,
+  MAX_MERGES, MAX_PLANTED, MERGE_SQUASH, MUSHROOM_CELL, MUSHROOM_EDGE_MARGIN, MUSHROOM_REST_HEIGHT, VALLEY_HALF_WIDTH, VALLEY_HALF_WIDTH_SWING,
+  WORLD_SEED,
 } from '../game/tuning.ts';
 import { sweetColor } from '../render/colors.ts';
 import { lookShading } from '../render/jelly-looks.ts';
@@ -200,15 +204,10 @@ const VEC4 = 4;
 const PATTERN_TURNS = 7;
 const HEIGHT_HASH = 13;
 
-// --- Slurps: collectibles on their way into the jelly ------------------------------
-const MAX_SLURPS = 16;
-const MAX_STANDING = MAX_PER_KIND - MAX_SLURPS;
-export const SLURP_SECONDS = 0.3;
-/** At the height of the slurp it is this much taller and thinner. */
-const SLURP_STRETCH = 0.7;
-const SLURP_PINCH = 0.35;
-/** Fraction of its size it has lost by the time it reaches the jelly. */
-const SLURP_SHRINK = 0.75;
+// --- Merges: collectibles on their way into the jelly ----------------------------------
+/** Instances kept free at the end of each batch for merges in progress and sprouted seeds. */
+const MAX_STANDING = MAX_PER_KIND - MAX_MERGES - MAX_PLANTED;
+const UP = new THREE.Vector3(0, 1, 0);
 
 /** One kind's instanced mesh and the per-instance data that goes with it. */
 class Batch {
@@ -305,10 +304,10 @@ export class MushroomField {
   private readonly position = new THREE.Vector3();
   private readonly rotation = new THREE.Quaternion();
   private readonly scale = new THREE.Vector3();
-  private readonly slurps = Array.from({ length: MAX_SLURPS }, () => ({
-    x: 0, y: 0, z: 0, radius: 0, kind: 0, look: 0, color: 0, color2: 0, seed: 0, age: SLURP_SECONDS,
-  }));
-  private nextSlurp = 0;
+  /** Turns a mushroom's cap toward the jelly as it merges (separate from `rotation`, which stays identity). */
+  private readonly facing = new THREE.Quaternion();
+  private readonly mergeRotation = new THREE.Quaternion();
+  private readonly toward = new THREE.Vector3();
   private cellX = Number.NaN;
   private cellZ = Number.NaN;
   private originZ = Number.NaN;
@@ -363,37 +362,45 @@ export class MushroomField {
     }
   }
 
-  /** Start sucking a just-merged collectible into the jelly. */
-  slurp(pickup: Pickup, ball: Ball) {
-    const slurp = this.slurps[this.nextSlurp];
-    this.nextSlurp = (this.nextSlurp + 1) % MAX_SLURPS;
-    // From where it stood: at the jelly's skin normally, metres away under a magnet.
-    const reach = pickup.distance;
-    slurp.x = ball.x + pickup.dx * reach; slurp.y = ball.y + pickup.dy * reach; slurp.z = ball.z + pickup.dz * reach;
-    slurp.radius = pickup.radius; slurp.kind = pickup.kind; slurp.look = pickup.look;
-    slurp.color = pickup.color; slurp.color2 = pickup.color2; slurp.seed = pickup.seed; slurp.age = 0;
-  }
-
-  /** Advance the slurps and upload whatever changed. Call once a frame, after update(). */
-  animate(ball: Ball, originZ: number, dt: number) {
-    const { matrix, position, rotation, scale } = this;
+  /**
+   * Draw every merge in progress, relative to the jelly's centre in render space,
+   * and upload whatever changed. Call once a frame, after update().
+   */
+  animate(merges: Merges, center: THREE.Vector3, seeds: SeedField, originZ: number) {
+    const { matrix, position, scale } = this;
     for (const batch of this.batches) batch.count = batch.standing;
-    for (const slurp of this.slurps) {
-      if (slurp.age >= SLURP_SECONDS) continue;
-      slurp.age += dt;
-      const t = Math.min(1, slurp.age / SLURP_SECONDS);
-      // Slow to start, then snatched in: the pull accelerates.
-      const pull = t * t;
-      const arc = Math.sin(Math.PI * t);
-      position.set(
-        slurp.x + (ball.x - slurp.x) * pull, slurp.y + (ball.y - slurp.y) * pull, slurp.z + (ball.z - slurp.z) * pull - originZ,
-      );
-      const size = slurp.radius * (1 - SLURP_SHRINK * pull);
-      const wide = size * (1 - SLURP_PINCH * arc);
-      scale.set(wide, size * (1 + SLURP_STRETCH * arc), wide);
-      matrix.compose(position, rotation, scale);
-      const batch = this.batches[slurp.kind];
-      batch.write(batch.count++, matrix, slurp.look, slurp.color, slurp.color2, slurp.seed, size);
+    // Collectibles grown from seeds: they pop up at the spot the seed landed.
+    for (const planted of seeds.items) {
+      if (!planted.alive) continue;
+      const grown = sproutScale(planted);
+      if (grown <= 0) continue;
+      const batch = this.batches[planted.kind];
+      if (batch.count >= MAX_PER_KIND) continue;
+      const size = planted.radius * grown;
+      const tall = HEIGHT_SCALE_MIN + HEIGHT_SCALE_RANGE * ((planted.seed * HEIGHT_HASH) % 1);
+      position.set(planted.x, planted.y, planted.z - originZ);
+      scale.set(size, size * tall, size);
+      matrix.compose(position, this.rotation, scale);
+      batch.write(batch.count++, matrix, planted.look, planted.color, planted.color2, planted.seed, size);
+      batch.dirty = true;
+    }
+    for (const merge of merges.items) {
+      if (!merge.active || merge.shape.size <= 0) continue;
+      const shape = merge.shape;
+      position.set(center.x + merge.dirX * shape.distance, center.y + merge.dirY * shape.distance, center.z + merge.dirZ * shape.distance);
+      // Cap first: it turns to face the jelly, so the squash and the sinking are along its own axis.
+      this.toward.set(-merge.dirX, -merge.dirY, -merge.dirZ);
+      this.facing.setFromUnitVectors(UP, this.toward);
+      this.mergeRotation.identity().slerp(this.facing, shape.tilt);
+      const tall = HEIGHT_SCALE_MIN + HEIGHT_SCALE_RANGE * ((merge.seed * HEIGHT_HASH) % 1);
+      // Pressed flat along its axis and fatter across, volume kept.
+      const flat = 1 - MERGE_SQUASH * shape.squash;
+      const wide = shape.size / Math.sqrt(flat);
+      scale.set(wide, shape.size * tall * flat, wide);
+      matrix.compose(position, this.mergeRotation, scale);
+      const batch = this.batches[merge.kind];
+      if (batch.count >= MAX_PER_KIND) continue;
+      batch.write(batch.count++, matrix, merge.look, merge.color, merge.color2, merge.seed, shape.size);
       batch.dirty = true;
     }
     for (const batch of this.batches) batch.commit();

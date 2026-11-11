@@ -15,6 +15,8 @@ export const BIOME_LENGTH = 1500;
 export const BIOME_TRANSITION = 200;
 /** Each time round the whole sequence, every biome wears this much harder again (fraction of its base rate). */
 export const LOOP_WEAR_GAIN = 0.5;
+/** Each time round the sequence the jelly's minimum and default speeds are this much higher than the loop before (compounding). */
+export const LOOP_SPEED_GAIN = 0.2;
 
 export type Biome = {
   readonly name: string;
@@ -104,6 +106,14 @@ export const collectibleScale = (s: number) => blended(s, pickCollectibles);
 export function wearScale(s: number): number {
   const stretch = biomeStretch(s);
   const of = (index: number) => BIOMES[biomeOfStretch(index)].wear * (1 + LOOP_WEAR_GAIN * loopOfStretch(index));
+  const from = of(stretch), to = of(stretch + 1);
+  return from + (to - from) * biomeBlend(s, stretch);
+}
+
+/** Factor on the minimum and default (coasting) speeds at `s`: 1 in the first loop, then +LOOP_SPEED_GAIN per loop, blended across transitions. */
+export function speedScale(s: number): number {
+  const stretch = biomeStretch(s);
+  const of = (index: number) => (1 + LOOP_SPEED_GAIN) ** loopOfStretch(index);
   const from = of(stretch), to = of(stretch + 1);
   return from + (to - from) * biomeBlend(s, stretch);
 }

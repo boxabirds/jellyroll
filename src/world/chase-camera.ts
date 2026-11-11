@@ -6,15 +6,21 @@ import * as THREE from 'three/webgpu';
 import { clamp } from '../game/noise.ts';
 import type { Ball } from '../game/physics.ts';
 import { courseDrift, terrainHeight } from '../game/terrain.ts';
-import { HEADING_MIN_SPEED, MAX_SPEED, START_RADIUS } from '../game/tuning.ts';
+import { CRUISE_SPEED, HEADING_MIN_SPEED, START_RADIUS } from '../game/tuning.ts';
 import { VIEW_DISTANCE } from './terrain-mesh.ts';
 
 const NEAR = 0.3;
 const FAR = VIEW_DISTANCE * 1.5;
+/**
+ * A tall, narrow screen would crop the sides of the hill, so the view widens until at least this much of the
+ * scene fits across, but never past MAX_FOV (a very wide lens distorts the jelly).
+ */
+const MIN_HORIZONTAL_FOV = 66;
+const MAX_FOV = 92;
 const FOV_SLOW = 56;
 const FOV_FAST = 72;
 /** Speed (m/s) at which the camera is fully pulled back and widened. */
-const FAST_SPEED = MAX_SPEED;
+const FAST_SPEED = CRUISE_SPEED;
 const DISTANCE_SLOW = 4.6;
 const DISTANCE_FAST = 6.6;
 const HEIGHT_SLOW = 1.9;
@@ -103,7 +109,11 @@ export class ChaseCamera {
 
   private pose(ball: Ball, originZ: number) {
     const { camera } = this;
-    const fov = FOV_SLOW + (FOV_FAST - FOV_SLOW) * this.zoom;
+    let fov = FOV_SLOW + (FOV_FAST - FOV_SLOW) * this.zoom;
+    if (camera.aspect < 1) {
+      const wide = 2 * Math.atan(Math.tan((MIN_HORIZONTAL_FOV * Math.PI) / 360) / camera.aspect) * (180 / Math.PI);
+      fov = Math.min(MAX_FOV, Math.max(fov, wide));
+    }
     if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
     camera.position.set(this.x, this.y, this.z - originZ);
     this.target.set(

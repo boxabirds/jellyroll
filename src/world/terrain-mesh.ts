@@ -4,14 +4,15 @@
  * construction; a recycled chunk just has its vertex buffers rewritten.
  */
 import * as THREE from 'three/webgpu';
-import { attribute, mix, normalMap, positionWorld, sin, smoothstep as smoothstepNode, texture, time, vec2, vec3 } from 'three/tsl';
+import { attribute, float, mix, normalMap, positionWorld, sin, smoothstep as smoothstepNode, texture, time, vec2, vec3 } from 'three/tsl';
 import type Node from 'three/src/nodes/core/Node.js';
 import { BIOME_COUNT, BIOME_LENGTH, biomeOfStretch, biomeStretch } from '../game/biomes.ts';
+import { createHazardSample, hazardAt } from '../game/hazards.ts';
 import { smoothstep, valueNoise1, valueNoise2 } from '../game/noise.ts';
 import { createRock, rockCellIndex, rockInCell } from '../game/rocks.ts';
 import { courseCenter, courseHalfWidth, kickerHeight, terrainHeight } from '../game/terrain.ts';
 import { GRADIENT_STEP, KICKER_HEIGHT, WORLD_SEED } from '../game/tuning.ts';
-import { GROUND_LOOKS, type GroundLook, type GroundTextures } from './biome-looks.ts';
+import { GROUND_LOOKS, HOLE_LOOKS, type GroundLook, type GroundTextures } from './biome-looks.ts';
 import { shadeUnderJelly, type GroundLighting } from './ground-lighting.ts';
 
 // --- Grid -------------------------------------------------------------------
@@ -94,6 +95,16 @@ const SHADE = 0;
 const VARIATION = 1;
 const BLEND = 2;
 const DIRT = 3;
+/** Per vertex, for holes: how deep in one it is, and whether it is the next biome's kind (1) or this one's (0). */
+const HOLE_SIZE = 2;
+const HOLE_DEPTH_INDEX = 0;
+const HOLE_KIND_INDEX = 1;
+/** The hole's edge is sharpened in the shader between these depths. */
+const HOLE_EDGE_FROM = 0.3;
+const HOLE_EDGE_TO = 0.55;
+const HALF = 0.5;
+const SHIMMER_PER_METRE_X = 0.45;
+const SHIMMER_PER_METRE_Z = 0.33;
 
 /**
  * Keeps only the brightest veins of an emission map. The lava texture glows
@@ -130,18 +141,28 @@ function createGroundMaterial(from: number, to: number, textures: readonly Groun
   const material = new THREE.MeshPhysicalNodeMaterial({ metalness: 0, roughness: 1, specularIntensity: GROUND_SPECULAR });
   const data = attribute('tint', 'vec4');
   const variation = data.y as unknown as Node<'float'>;
+  const hole = attribute('hole', 'vec2');
+  const holeMask = smoothstepNode(HOLE_EDGE_FROM, HOLE_EDGE_TO, hole.x);
+  const holeLookA = HOLE_LOOKS[from], holeLookB = HOLE_LOOKS[to];
   const a = groundLayer(GROUND_LOOKS[from], textures[from], variation);
   const b = groundLayer(GROUND_LOOKS[to], textures[to], variation);
   const blend = smoothstepNode(BLEND_EDGE_FROM, BLEND_EDGE_TO, data.z);
   const ground = mix(a.albedo, b.albedo, blend).mul(data.x);
-  const albedo = mix(ground, mix(a.dirt, b.dirt, blend), data.w) as unknown as Node<'vec3'>;
+  const surface = mix(ground, mix(a.dirt, b.dirt, blend), data.w);
+  // A hole shows its own surface, shimmering, in the colours of whichever biome's hole this is.
+  const shimmerPhase = positionWorld.x.mul(SHIMMER_PER_METRE_X).add(positionWorld.z.mul(SHIMMER_PER_METRE_Z));
+  const shimmerRate = mix(float(holeLookA.shimmerRate), float(holeLookB.shimmerRate), hole.y);
+  const shimmerDepth = mix(float(holeLookA.shimmerDepth), float(holeLookB.shimmerDepth), hole.y);
+  const shimmer = sin(time.mul(shimmerRate).add(shimmerPhase)).mul(shimmerDepth).add(float(1).sub(shimmerDepth.mul(HALF)));
+  const holeColor = mix(vec3(...holeLookA.color), vec3(...holeLookB.color), hole.y).mul(shimmer);
+  const albedo = mix(surface, holeColor, holeMask) as unknown as Node<'vec3'>;
   material.colorNode = shadeUnderJelly(albedo, lighting);
   material.normalNode = mix(a.normal, b.normal, blend).normalize();
-  material.roughnessNode = mix(a.roughness, b.roughness, blend);
-  if (textures[from].emission || textures[to].emission) {
-    const pulse = sin(time.mul(GLOW_PULSE_RATE).add(positionWorld.x.mul(GLOW_PULSE_PER_METRE))).mul(GLOW_PULSE).add(1 - GLOW_PULSE);
-    material.emissiveNode = mix(a.glow, b.glow, blend).mul(pulse).mul(data.x);
-  }
+  material.roughnessNode = mix(mix(a.roughness, b.roughness, blend), mix(float(holeLookA.roughness), float(holeLookB.roughness), hole.y), holeMask);
+  const pulse = sin(time.mul(GLOW_PULSE_RATE).add(positionWorld.x.mul(GLOW_PULSE_PER_METRE))).mul(GLOW_PULSE).add(1 - GLOW_PULSE);
+  const groundGlow = textures[from].emission || textures[to].emission ? mix(a.glow, b.glow, blend).mul(pulse).mul(data.x) : vec3(0);
+  const holeGlow = mix(vec3(...holeLookA.glow), vec3(...holeLookB.glow), hole.y).mul(shimmer);
+  material.emissiveNode = mix(groundGlow, holeGlow, holeMask);
   return material;
 }
 
@@ -150,6 +171,7 @@ type Chunk = {
   positions: Float32Array;
   normals: Float32Array;
   tints: Float32Array;
+  holes: Float32Array;
   /** Snapped valley-centre X of each row, kept so rock shadows can find their vertices. */
   rowOriginX: Float32Array;
   /** Which stretch of the course this chunk currently shows. */
@@ -163,6 +185,8 @@ export class TerrainMesh {
   private readonly materials: THREE.MeshPhysicalNodeMaterial[];
   private readonly indexAttribute: THREE.BufferAttribute;
   private readonly rock = createRock();
+  private readonly hole = createHazardSample();
+  private readonly probeVisible: boolean[] = new Array<boolean>(CHUNK_POOL).fill(false);
   private readonly shadowDirectionX: number;
   private readonly shadowDirectionZ: number;
 
@@ -214,6 +238,27 @@ export class TerrainMesh {
     return () => { for (const mesh of extras) this.group.remove(mesh); };
   }
 
+  /**
+   * For the reflection probe: while `capturing`, only the chunks within `range`
+   * of render-space depth `centerZ` are drawn; afterwards visibility is restored.
+   * A reflection in a 128 pixel cube needs the ground around the jelly, not the
+   * whole drawn distance.
+   */
+  limitTo(capturing: boolean, centerZ: number, range: number) {
+    const chunks = this.chunks;
+    if (!capturing) {
+      for (let i = 0; i < chunks.length; i++) chunks[i].mesh.visible = this.probeVisible[i];
+      return;
+    }
+    for (let i = 0; i < chunks.length; i++) {
+      const mesh = chunks[i].mesh;
+      this.probeVisible[i] = mesh.visible;
+      // A chunk runs from its position toward -z for CHUNK_LENGTH.
+      const near = mesh.position.z, far = mesh.position.z - CHUNK_LENGTH;
+      if (far > centerZ + range || near < centerZ - range) mesh.visible = false;
+    }
+  }
+
   dispose() {
     for (const chunk of this.chunks) chunk.mesh.geometry.dispose();
     for (const material of this.materials) material.dispose();
@@ -224,10 +269,12 @@ export class TerrainMesh {
     const positions = new Float32Array(vertexCount * 3);
     const normals = new Float32Array(vertexCount * 3);
     const tints = new Float32Array(vertexCount * TINT_SIZE);
+    const holes = new Float32Array(vertexCount * HOLE_SIZE);
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
     geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3).setUsage(THREE.DynamicDrawUsage));
     geometry.setAttribute('tint', new THREE.BufferAttribute(tints, TINT_SIZE).setUsage(THREE.DynamicDrawUsage));
+    geometry.setAttribute('hole', new THREE.BufferAttribute(holes, HOLE_SIZE).setUsage(THREE.DynamicDrawUsage));
     geometry.setAttribute('uv', uvs);
     geometry.setIndex(this.indexAttribute);
     const mesh = new THREE.Mesh(geometry, this.materials[0]);
@@ -236,18 +283,19 @@ export class TerrainMesh {
     mesh.frustumCulled = false;
     mesh.visible = false;
     this.group.add(mesh);
-    return { mesh, positions, normals, tints, rowOriginX: new Float32Array(CHUNK_ROWS + 1), index: UNASSIGNED };
+    return { mesh, positions, normals, tints, holes, rowOriginX: new Float32Array(CHUNK_ROWS + 1), index: UNASSIGNED };
   }
 
   private fill(chunk: Chunk, index: number) {
-    const { positions, normals, tints, rowOriginX } = chunk;
+    const { positions, normals, tints, holes, rowOriginX } = chunk;
     const startS = index * CHUNK_LENGTH;
     // The whole chunk is drawn as the stretch it starts in. Rows that lie past
     // the end of that stretch are simply fully the next biome.
     const stretch = biomeStretch(startS);
     const boundary = (stretch + 1) * BIOME_LENGTH;
     chunk.mesh.material = this.materials[biomeOfStretch(stretch)];
-    let p = 0, t = 0;
+    const nextBiome = biomeOfStretch(stretch + 1);
+    let p = 0, t = 0, holeIndex = 0;
     for (let row = 0; row <= CHUNK_ROWS; row++) {
       const s = startS + row * TERRAIN_CELL;
       const z = -s;
@@ -277,6 +325,9 @@ export class TerrainMesh {
         tints[t + BLEND] = smoothstep(boundary - EDGE_BAND, boundary + EDGE_BAND, s + wander);
         tints[t + DIRT] = Math.min(1, kickerHeight(x, s) / KICKER_HEIGHT);
         t += TINT_SIZE;
+        holes[holeIndex + HOLE_DEPTH_INDEX] = hazardAt(x - centre, s, halfWidth, this.hole);
+        holes[holeIndex + HOLE_KIND_INDEX] = this.hole.kind === nextBiome ? 1 : 0;
+        holeIndex += HOLE_SIZE;
       }
     }
     this.stampRockShadows(chunk, startS);
@@ -284,6 +335,7 @@ export class TerrainMesh {
     geometry.attributes.position.needsUpdate = true;
     geometry.attributes.normal.needsUpdate = true;
     geometry.attributes.tint.needsUpdate = true;
+    geometry.attributes.hole.needsUpdate = true;
     chunk.index = index;
   }
 

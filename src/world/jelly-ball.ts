@@ -14,8 +14,10 @@ import * as THREE from 'three/webgpu';
 import { attribute, float, mix, smoothstep, uniform, varying, vec3 } from 'three/tsl';
 import type Node from 'three/src/nodes/core/Node.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { dentDepth, unionRadius } from '../game/merge-timeline.ts';
+import type { Merge, Merges } from '../game/merges.ts';
 import type { Ball, Pickup } from '../game/physics.ts';
-import { START_RADIUS } from '../game/tuning.ts';
+import { MAX_MERGES, MERGE_UNION_FATTEN, MIN_RADIUS, START_RADIUS } from '../game/tuning.ts';
 import type { Wobble } from '../game/wobble.ts';
 import { START_COLOR, sweetColor } from '../render/colors.ts';
 import { lookShading } from '../render/jelly-looks.ts';
@@ -60,8 +62,20 @@ const BUMP_LAUNCH = 1.35;
 /** Each merge flashes its part of the jelly in the mushroom's colour, fading at this rate (1/s). */
 const FLASH_GAIN = 0.9;
 const FLASH_FADE_RATE = 5;
-/** The jelly swells to its new size instead of jumping to it (rate, 1/s). */
-const SWELL_RATE = 9;
+/** A merge finishing gives the body a soft thump: squash speed (1/s) per unit of mushroom-to-jelly size ratio. */
+const COMPLETE_KICK = 5;
+/** Angular width of the dent a mushroom presses into the jelly. */
+const DENT_WIDTH = 0.3;
+/** Share of its colour the blend bulge already shows when the union first forms. */
+const EARLY_COLOR = 0.45;
+/** The critically-low warning: red the body is pulled toward, and how much of that and of a glow it gets at full strength. */
+const ALARM_DEEP = new THREE.Color('#e11d1d');
+const ALARM_TINT = new THREE.Color('#ff6b6b');
+const ALARM_DEEP_SHARE = 0.85;
+const ALARM_TINT_SHARE = 0.7;
+const ALARM_GLOW = 0.9;
+/** Per active merge: centre offset x, y, z, its square, the union sphere radius, blend radius, dent depth, dent direction x, y, z. */
+const BLEND_STRIDE = 11;
 /** Angular spread of a lump: larger is broader. */
 const BUMP_WIDTH = 0.22;
 /** A settled lobe leaves the jelly this lumpy (fraction of radius), so shapes mix too. */
@@ -92,9 +106,13 @@ type Lobe = {
   tint: THREE.Color;
   weight: { value: number };
   flash: { value: number };
-  /** Seconds until the mushroom being slurped arrives and the lump is launched. */
-  arriving: number;
+  /** Starting speed of the lump when the merge finishes. */
   launch: number;
+  /** 0..1: how much of its colour is showing (grows through the blend), and how much of its life is left. */
+  ramp: number;
+  life: number;
+  /** The merge this lobe is following, while the mushroom is still being absorbed. */
+  follow: Merge | null;
   look: { value: number };
   seed: { value: number };
   deep2: THREE.Color;
@@ -115,12 +133,14 @@ export class JellyBall {
   private readonly positions: Float32Array;
   private readonly material: THREE.MeshPhysicalNodeMaterial;
   private readonly radius = uniform(START_RADIUS);
+  /** 0..1: how strongly the body is flushed red (the critically-low warning). */
+  private readonly alarm = uniform(0);
   private readonly baseDeep = new THREE.Color();
   private readonly baseTint = new THREE.Color();
   private readonly bodyFromWorld = new THREE.Matrix3();
   private readonly lobes: Lobe[] = [];
   private nextLobe = 0;
-  private shownRadius = START_RADIUS;
+  private readonly blendData = new Float64Array(MAX_MERGES * BLEND_STRIDE);
   private readonly spin = new THREE.Quaternion();
   private readonly inverseSpin = new THREE.Quaternion();
   private readonly rotation = new THREE.Matrix4();
@@ -166,9 +186,13 @@ export class JellyBall {
   reset() {
     this.baseDeep.copy(START_COLOR.deep);
     this.baseTint.copy(START_COLOR.tint);
-    for (const lobe of this.lobes) { lobe.weight.value = 0; lobe.flash.value = 0; lobe.bump = 0; lobe.bumpVelocity = 0; lobe.launch = 0; }
+    for (const lobe of this.lobes) { lobe.weight.value = 0; lobe.flash.value = 0; lobe.bump = 0; lobe.bumpVelocity = 0; lobe.launch = 0; lobe.ramp = 0; lobe.life = 0; lobe.follow = null; }
     this.nextLobe = 0;
-    this.shownRadius = START_RADIUS;
+  }
+
+  /** @param level 0 (healthy) to 1 (fully red) */
+  setAlarm(level: number) {
+    this.alarm.value = level;
   }
 
   setReflectionMap(texture: THREE.Texture) {
@@ -176,13 +200,16 @@ export class JellyBall {
   }
 
   /**
-   * Melt a just-merged mushroom into the jelly where it touched. `delay` is how
-   * long the mushroom takes to be pulled in; the lump and flash wait for it.
+   * Give a merge its colour lobe on the jelly. The lobe follows the mushroom
+   * (in world directions) while it is absorbed, then stays where it ended up
+   * and rolls with the body from then on.
    */
-  absorb(pickup: Pickup, ball: Ball, delay: number) {
-    const lobe = this.lobes[this.nextLobe];
+  absorb(pickup: Pickup, ball: Ball, merge: Merge) {
+    const index = this.nextLobe;
+    const lobe = this.lobes[index];
     this.nextLobe = (this.nextLobe + 1) % LOBE_COUNT;
-    // Whatever this slot still held dissolves into the base colour.
+    // A merge still using this slot loses its patch; whatever the slot held dissolves into the base colour.
+    if (lobe.follow) lobe.follow.lobe = -1;
     this.fold(lobe, BASE_FOLD * lobe.weight.value);
     this.inverseSpin.set(ball.qx, ball.qy, ball.qz, ball.qw).invert();
     lobe.direction.set(pickup.dx, pickup.dy, pickup.dz).applyQuaternion(this.inverseSpin);
@@ -191,21 +218,31 @@ export class JellyBall {
     lobe.deep2.copy(sweetColor(pickup.kind, pickup.color2).deep);
     lobe.look.value = pickup.look;
     lobe.seed.value = pickup.seed;
-    lobe.weight.value = 1;
-    lobe.arriving = delay;
-    lobe.launch = Math.min(BUMP_MAX, (pickup.radius / ball.radius) * BUMP_GAIN) * TAU * BUMP_FREQUENCY_HZ * BUMP_LAUNCH;
+    lobe.life = 1;
+    lobe.ramp = 0;
+    lobe.weight.value = 0;
+    lobe.bump = 0;
+    lobe.bumpVelocity = 0;
+    lobe.follow = merge;
+    merge.lobe = index;
+    lobe.launch = Math.min(BUMP_MAX, (pickup.radius / pickup.jellyRadius) * BUMP_GAIN) * TAU * BUMP_FREQUENCY_HZ * BUMP_LAUNCH;
   }
 
-  update(ball: Ball, wobble: Wobble, originZ: number, dt: number) {
-    // Swell (or shrink) toward the true size; keep the shortfall on the ground side.
-    this.shownRadius += (ball.radius - this.shownRadius) * Math.min(1, SWELL_RATE * dt);
-    const R = this.shownRadius;
+  update(ball: Ball, wobble: Wobble, originZ: number, dt: number, merges: Merges) {
+    // The jelly is already its new size in the simulation, but it is shown growing as each
+    // mushroom's volume flows into it during the blend. The centre has already risen with the
+    // true radius, so the shortfall is taken up on the ground side.
+    const pending = merges.pendingVolume();
+    const R = Math.cbrt(Math.max(ball.radius ** 3 - pending, MIN_RADIUS ** 3));
     const shortfall = ball.radius - R;
     this.radius.value = R;
     this.spin.set(ball.qx, ball.qy, ball.qz, ball.qw);
     this.inverseSpin.copy(this.spin).invert();
     this.bodyFromWorld.setFromMatrix4(this.rotation.makeRotationFromQuaternion(this.inverseSpin));
+    this.followMerges(merges);
+    for (let i = 0; i < merges.completedCount; i++) this.complete(merges.completed[i], wobble);
     this.settleLobes(dt);
+    const blends = this.prepareBlends(merges, R);
 
     const { nx, ny, nz } = ball;
     const axial = Math.max(MIN_AXIAL_SCALE, 1 - wobble.squash);
@@ -228,7 +265,20 @@ export class JellyBall {
         a.bump * Math.exp((ux * a.world.x + uy * a.world.y + uz * a.world.z - 1) / BUMP_WIDTH) +
         b.bump * Math.exp((ux * b.world.x + uy * b.world.y + uz * b.world.z - 1) / BUMP_WIDTH) +
         c.bump * Math.exp((ux * c.world.x + uy * c.world.y + uz * c.world.z - 1) / BUMP_WIDTH));
-      const dx = ux * lump, dy = uy * lump, dz = uz * lump;
+      // Merging mushrooms: each presses a dent in, then melts into the jelly through a smooth union.
+      let radius = lump;
+      for (let m = 0, o = 0; m < blends; m++, o += BLEND_STRIDE) {
+        const blend = this.blendData;
+        const dent = blend[o + 6];
+        if (dent > 0) {
+          radius -= dent * Math.exp((ux * blend[o + 7] + uy * blend[o + 8] + uz * blend[o + 9] - 1) / DENT_WIDTH);
+        }
+        const sphere = blend[o + 4];
+        if (sphere > 0) {
+          radius = unionRadius(radius, ux * blend[o] + uy * blend[o + 1] + uz * blend[o + 2], blend[o + 3], sphere, blend[o + 5]);
+        }
+      }
+      const dx = ux * radius, dy = uy * radius, dz = uz * radius;
       // Split into the part along the ground normal and the part across it.
       const alongRest = dx * nx + dy * ny + dz * nz;
       let along = alongRest * axial;
@@ -275,23 +325,60 @@ export class JellyBall {
     this.baseTint.setHSL(this.hsl.h, BASE_TINT_SATURATION, BASE_TINT_LIGHTNESS, THREE.SRGBColorSpace);
   }
 
+  /** While a mushroom is being absorbed, its lobe tracks it (in world directions) and its colour fades in. */
+  private followMerges(merges: Merges) {
+    for (const merge of merges.items) {
+      if (!merge.active || merge.lobe < 0) continue;
+      const lobe = this.lobes[merge.lobe];
+      lobe.direction.set(merge.dirX, merge.dirY, merge.dirZ).applyQuaternion(this.inverseSpin);
+      // The mushroom's colour starts mixing into the bulge as soon as the union forms, and is complete when it is absorbed.
+      lobe.ramp = Math.max(merge.shape.transferred, EARLY_COLOR * merge.shape.unionScale);
+    }
+  }
+
+  /** A merge has finished: the lobe settles where it is, the lump springs out with overshoot, the patch flashes. */
+  private complete(done: { lobe: number; radius: number; jellyRadius: number }, wobble: Wobble) {
+    wobble.squashVelocity += COMPLETE_KICK * Math.min(1, done.radius / done.jellyRadius);
+    if (done.lobe < 0) return;
+    const lobe = this.lobes[done.lobe];
+    lobe.follow = null;
+    lobe.ramp = 1;
+    lobe.bumpVelocity += lobe.launch;
+    lobe.flash.value = 1;
+  }
+
+  /** Per-frame numbers for the vertex loop, one block per active merge. Returns how many. */
+  private prepareBlends(merges: Merges, jellyRadius: number): number {
+    const data = this.blendData;
+    let count = 0;
+    for (const merge of merges.items) {
+      if (!merge.active || count === MAX_MERGES) continue;
+      const shape = merge.shape, o = count * BLEND_STRIDE;
+      const cx = merge.dirX * shape.distance, cy = merge.dirY * shape.distance, cz = merge.dirZ * shape.distance;
+      data[o] = cx; data[o + 1] = cy; data[o + 2] = cz;
+      data[o + 3] = shape.distance * shape.distance;
+      data[o + 4] = shape.unionScale * MERGE_UNION_FATTEN * shape.size;
+      data[o + 5] = shape.k;
+      data[o + 6] = dentDepth(shape, merge.radius, jellyRadius);
+      data[o + 7] = merge.dirX; data[o + 8] = merge.dirY; data[o + 9] = merge.dirZ;
+      count++;
+    }
+    return count;
+  }
+
   /** Spring each lump toward its settled size, fade lobes into the base, refresh derived state. */
   private settleLobes(dt: number) {
     const omega = TAU * BUMP_FREQUENCY_HZ;
     const fade = 1 - Math.exp(-dt / LOBE_LIFETIME);
     let r = this.baseDeep.r, g = this.baseDeep.g, b = this.baseDeep.b, total = 1;
     for (const lobe of this.lobes) {
-      if (lobe.launch > 0 && (lobe.arriving -= dt) <= 0) {
-        lobe.bumpVelocity += lobe.launch;
-        lobe.launch = 0;
-        lobe.flash.value = 1;
-      }
       lobe.flash.value -= lobe.flash.value * Math.min(1, FLASH_FADE_RATE * dt);
-      const rest = BUMP_RESIDUAL * lobe.weight.value;
+      const rest = lobe.follow ? 0 : BUMP_RESIDUAL * lobe.weight.value;
       lobe.bumpVelocity += (-omega * omega * (lobe.bump - rest) - 2 * BUMP_DAMPING_RATIO * omega * lobe.bumpVelocity) * dt;
       lobe.bump += lobe.bumpVelocity * dt;
       this.fold(lobe, BASE_FOLD * lobe.weight.value * fade);
-      lobe.weight.value -= lobe.weight.value * fade;
+      lobe.life -= lobe.life * fade;
+      lobe.weight.value = lobe.life * lobe.ramp;
       lobe.world.copy(lobe.direction).applyQuaternion(this.spin);
       r += lobe.deep.r * lobe.weight.value; g += lobe.deep.g * lobe.weight.value; b += lobe.deep.b * lobe.weight.value;
       total += lobe.weight.value;
@@ -310,7 +397,7 @@ export class JellyBall {
       const lobe: Lobe = {
         direction: new THREE.Vector3(0, 1, 0), world: new THREE.Vector3(0, 1, 0),
         deep: new THREE.Color(), tint: new THREE.Color(), deep2: new THREE.Color(),
-        weight: uniform(0), flash: uniform(0), arriving: 0, launch: 0, look: uniform(0), seed: uniform(0), bump: 0, bumpVelocity: 0,
+        weight: uniform(0), flash: uniform(0), launch: 0, ramp: 0, life: 0, follow: null, look: uniform(0), seed: uniform(0), bump: 0, bumpVelocity: 0,
       };
       this.lobes.push(lobe);
       const shading = lookShading(
@@ -326,10 +413,15 @@ export class JellyBall {
       glow = mix(glow, shading.glow, reach)
         .add(shading.attenuation.mul(reach).mul(lobe.flash as unknown as Node<'float'>).mul(FLASH_GAIN)) as unknown as Node<'vec3'>;
     }
+    // The warning: the body's colour is pulled toward red and it glows, so the whole jelly flushes with each beat.
+    const alarm = this.alarm as unknown as Node<'float'>;
+    const redDeep = vec3(ALARM_DEEP.r, ALARM_DEEP.g, ALARM_DEEP.b), redTint = vec3(ALARM_TINT.r, ALARM_TINT.g, ALARM_TINT.b);
     return createJellyMaterial({
       radius: this.radius as unknown as Node<'float'>,
-      tint: uniform(this.baseTint) as unknown as Node<'vec3'>,
-      attenuation, bit, bitColor, glow,
+      tint: mix(uniform(this.baseTint) as unknown as Node<'vec3'>, redTint, alarm.mul(ALARM_TINT_SHARE)) as unknown as Node<'vec3'>,
+      attenuation: mix(attenuation, redDeep, alarm.mul(ALARM_DEEP_SHARE)) as unknown as Node<'vec3'>,
+      bit, bitColor,
+      glow: glow.add(redDeep.mul(alarm).mul(ALARM_GLOW)) as unknown as Node<'vec3'>,
     });
   }
 }

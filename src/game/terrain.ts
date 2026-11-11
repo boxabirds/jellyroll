@@ -5,6 +5,7 @@
  * disagree about where the ground is.
  */
 import { hillScale, mogulScale, widthScale } from './biomes.ts';
+import { createHazardSample, hazardAt } from './hazards.ts';
 import { hash2, smoothstep, valueNoise1, valueNoise2 } from './noise.ts';
 import {
   BOWL_CURVATURE,
@@ -12,6 +13,7 @@ import {
   GROOVE_AMPLITUDE,
   GROOVE_LENGTH,
   GROOVE_WIDTH,
+  HAZARD_DEPTH,
   HILL_AMPLITUDE,
   HILL_WAVELENGTH,
   KICKER_CHANCE,
@@ -49,6 +51,7 @@ import {
 } from './tuning.ts';
 
 const TAU = Math.PI * 2;
+const holeScratch = createHazardSample();
 const SEED_HILLS = WORLD_SEED + 1;
 const SEED_MOGULS = WORLD_SEED + 2;
 const SEED_RIPPLE = WORLD_SEED + 3;
@@ -128,7 +131,8 @@ export function kickerHeight(x: number, s: number): number {
 
 export function terrainHeight(x: number, z: number): number {
   const s = -z;
-  const u = Math.abs(x - courseCenter(s));
+  const offset = x - courseCenter(s);
+  const u = Math.abs(offset);
   const halfWidth = courseHalfWidth(s);
   const beyond = u - halfWidth;
   // Past the ridge the land is distant scenery drawn with very coarse cells:
@@ -147,7 +151,8 @@ export function terrainHeight(x: number, z: number): number {
     GROOVE_AMPLITUDE * inValley * valueNoise2(x / GROOVE_WIDTH, s / GROOVE_LENGTH, SEED_GROOVES) +
     MOGUL_AMPLITUDE * rough * valueNoise2(x / MOGUL_WAVELENGTH, s / MOGUL_WAVELENGTH, SEED_MOGULS) +
     RIPPLE_AMPLITUDE * rough * valueNoise2(x / RIPPLE_WAVELENGTH, s / RIPPLE_WAVELENGTH, SEED_RIPPLE) +
-    kickerHeight(x, s)
+    kickerHeight(x, s) -
+    HAZARD_DEPTH * hazardAt(offset, s, halfWidth, holeScratch)
   );
 }
 

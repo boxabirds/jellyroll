@@ -5,20 +5,28 @@
  */
 import * as THREE from 'three/webgpu';
 import { BIOMES, dominantBiome, wearScale } from '../game/biomes.ts';
-import { ballSpeed, createBall, grantMagnet, resetBall, stepBall } from '../game/physics.ts';
+import { ballSpeed, createBall, grantMagnet, grow, resetBall, spraySeeds, stepBall } from '../game/physics.ts';
 import { MagnetItems } from '../world/magnet-items.ts';
+import { SeedPacketItems } from '../world/seed-packet-items.ts';
+import { SeedSpray } from '../world/seed-spray.ts';
 import { START_COLOR } from '../render/colors.ts';
-import { MushroomField, SLURP_SECONDS } from '../world/mushroom-field.ts';
+import { MushroomField } from '../world/mushroom-field.ts';
+import { Merges } from '../game/merges.ts';
+import { Alarm } from '../game/alarm.ts';
+import { GrowthPopups } from './growth-popups.ts';
 import { MergeSplash } from '../world/merge-splash.ts';
 import { SlimeTrail } from '../world/slime-trail.ts';
+import { HazardProps } from '../world/hazard-props.ts';
 import { JellySound, type SoundState } from '../audio/sound.ts';
 import { courseCenter, terrainHeight } from '../game/terrain.ts';
-import { MAGNET_RADIUS, MAX_FRAME_SECONDS, MAX_SUBSTEPS_PER_FRAME, MIN_SPEED, PHYSICS_STEP } from '../game/tuning.ts';
+import { MAGNET_RADIUS, MAX_FRAME_SECONDS, MUSHROOM_TOUCH, MAX_SUBSTEPS_PER_FRAME, MIN_SPEED, PHYSICS_STEP } from '../game/tuning.ts';
 import { createWobble, resetWobble, stepWobble } from '../game/wobble.ts';
 import { createComposite } from '../render/composite.ts';
 import { loadEnvironment } from '../render/environment.ts';
 import { LocalReflectionProbe } from '../render/local-reflections.ts';
-import { createRenderer, resizeView } from '../render/renderer.ts';
+import { createRenderer, MOBILE_MAX_DEVICE_PIXEL_RATIO, resizeView } from '../render/renderer.ts';
+import { TiltSensor } from './tilt.ts';
+import { TouchControls } from './touch-controls.ts';
 import { ChaseCamera } from '../world/chase-camera.ts';
 import { createGroundLighting } from '../world/ground-lighting.ts';
 import { JellyBall } from '../world/jelly-ball.ts';
@@ -35,6 +43,17 @@ const ENVIRONMENT_INTENSITY = 0.75;
 /** Chunks refilled per frame while playing; the loading screen fills them all. */
 const CHUNKS_PER_FRAME = 1;
 const MILLISECONDS = 1000;
+/** Reflection faces captured per frame: fewer on phones. */
+const MOBILE_PROBE_FACES = 2;
+/** Short vibrations (milliseconds) on a merge and on a hard landing, where the phone can vibrate. */
+const MERGE_BUZZ_MS = 12;
+const HARD_LANDING_BUZZ_MS = 28;
+const HARD_LANDING_SPEED = 9;
+
+/** The reflection probe draws ground only this far (metres) in front of and behind the jelly. */
+const PROBE_RANGE = 64;
+/** The demo merge comes in a little above the jelly's equator, so it shows against the grass. */
+const DEMO_RISE = 0.25;
 /** The magnet's ring on the ground fades out over its last moments, as a warning. */
 const MAGNET_FADE_SECONDS = 1.5;
 
@@ -44,8 +63,8 @@ export type Game = { stop: () => void };
 export type DebugSnapshot = {
   x: number; y: number; z: number; speed: number; distance: number; grounded: boolean;
   throttle: number; steer: number; jump: boolean; squash: number; frames: number;
-  radius: number; merges: number; wornOut: boolean; mushroomsDrawn: number; airSeconds: number; magnetSeconds: number;
-  biome: string; wear: number;
+  radius: number; merges: number; wornOut: boolean; mushroomsDrawn: number; airSeconds: number; magnetSeconds: number; seedsAlive: number;
+  biome: string; wear: number; holeDepth: number; holeKind: number;
   sound: SoundState; audioContext: string; soundsPlayed: number; soundPeak: number; muted: boolean; helpShown: boolean;
 };
 declare global {
@@ -58,6 +77,16 @@ declare global {
       resize: (radius: number) => void;
       /** Test hook: switch the magnet on as if one had just been picked up. */
       magnet: () => void;
+      /** Test hook: spray a packet's worth of seeds from the jelly. */
+      seeds: () => void;
+      /** Test hook: play one merge sound and report whether it was recorded or synthesised, and how loud. */
+      probeMerge: (kind: number, radius: number) => Promise<{ source: string; peak: number }>;
+      /** How many recorded sounds have loaded, of how many. */
+      samples: () => { loaded: number; expected: number };
+      /** Performance hook: show or hide one part of the scene (or skip the reflection probe) to find what costs frames. */
+      toggle: (name: string, on: boolean) => void;
+      /** Test hook: merge a mushroom of `kind` and `radius` into the jelly's right side, as if it had just touched it. */
+      mergeDemo: (kind: number, radius: number, look: number) => void;
     };
   }
 }
@@ -84,9 +113,13 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   const rocks = new RockField();
   const jelly = new JellyBall();
   const mushrooms = new MushroomField();
+  const merges = new Merges();
   const splash = new MergeSplash();
   const trail = new SlimeTrail();
   const magnets = new MagnetItems();
+  const packets = new SeedPacketItems();
+  const spray = new SeedSpray();
+  const holes = new HazardProps();
   let playSeconds = 0;
   const sound = new JellySound();
   const rig = new ChaseCamera();
@@ -94,19 +127,34 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   // reflection probe captures: jellies do not appear in each other's reflections.
   const jellies = new THREE.Group();
   jellies.add(jelly.group, mushrooms.group);
-  scene.add(terrain.group, rocks.mesh, trail.mesh, splash.mesh, magnets.group, jellies);
-  const probe = new LocalReflectionProbe(scene, jellies, environment.reflectionTexture);
+  scene.add(terrain.group, rocks.mesh, holes.group, trail.mesh, splash.mesh, magnets.group, packets.group, spray.mesh, jellies);
+  // The reflection is re-rendered from the scene several times a frame, so it only draws the ground around the
+  // jelly and leaves out everything too small to see in it.
+  const coarse = matchMedia('(pointer: coarse)').matches;
+  const probe = new LocalReflectionProbe(scene, jellies, environment.reflectionTexture, coarse ? MOBILE_PROBE_FACES : undefined, {
+    detail: [mushrooms.group, rocks.mesh, holes.group, trail.mesh, splash.mesh, magnets.group, packets.group, spray.mesh],
+    restrict: capturing => terrain.limitTo(capturing, jelly.center.z, PROBE_RANGE),
+  });
   jelly.setReflectionMap(probe.texture);
   const composite = createComposite(renderer, scene, rig.camera);
+  const popups = new GrowthPopups(rig.camera);
+  const alarm = new Alarm();
+  alarm.steady = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const hud = new Hud();
 
   let accumulator = 0;
   let frames = 0;
+  let probeEnabled = true;
   const restart = () => {
     hud.save();
     resetBall(ball);
     resetWobble(wobble, ball);
     jelly.reset();
+    merges.reset();
+    alarm.reset();
+    hud.setAlarm(0, false);
+    jelly.setAlarm(0);
+    popups.clear();
     trail.reset();
     sound.reset();
     accumulator = 0;
@@ -115,6 +163,20 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     probe.invalidate();
   };
   const input = new Input(restart, () => sound.toggleMute(), () => sound.start());
+  // Touch: a stick, a jump button, and tilt steering from the phone's sensors.
+  const tilt = new TiltSensor(text => hud.toast(text));
+  const touch = new TouchControls(input, tilt, () => { sound.toggleMute(); return sound.muted; }, text => hud.toast(text));
+  let wakeLock: WakeLockSentinel | null = null;
+  const keepAwake = () => { if (navigator.wakeLock && !document.hidden) void navigator.wakeLock.request('screen').then(lock => { wakeLock = lock; }).catch(() => {}); };
+  touch.onFirstTouch = () => {
+    // Browsers only allow sound and a wake lock after a touch, and iPhones count the touch ending, so both get a go.
+    sound.start();
+    window.addEventListener('pointerup', () => sound.start(), { once: true });
+    keepAwake();
+    hud.toast('Stick: speed and steering · button: jump · phone icon: tilt');
+  };
+  document.addEventListener('visibilitychange', keepAwake);
+  if (coarse) touch.show();
 
   /** Stream the world around the ball and pose everything in render space. */
   const present = (chunkBudget: number, dt: number) => {
@@ -122,15 +184,21 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     sky.apply(atmosphereAt(-ball.z, air));
     terrain.update(-ball.z, origin.z, chunkBudget);
     rocks.update(ball.x, ball.z, origin.z);
+    holes.update(ball.x, ball.z, origin.z, ball.clock);
     mushrooms.update(ball.x, ball.z, origin.z, ball.ledger);
-    mushrooms.animate(ball, origin.z, dt);
     splash.update(origin.z, dt);
     playSeconds += dt;
     trail.update(ball, jelly.shadowTint, origin.z, playSeconds);
     magnets.update(ball, origin.z, playSeconds);
+    packets.update(ball, origin.z, playSeconds);
+    spray.update(ball.seeds, origin.z);
     lighting.magnetReach.value = ball.radius + MAGNET_RADIUS;
     lighting.magnetStrength.value = Math.min(1, ball.magnetSeconds / MAGNET_FADE_SECONDS);
-    jelly.update(ball, wobble, origin.z, dt);
+    merges.update(dt);
+    jelly.update(ball, wobble, origin.z, dt, merges);
+    merges.clearCompleted();
+    // The mushrooms in the middle of a merge are placed against the jelly as it is drawn this frame.
+    mushrooms.animate(merges, jelly.center, ball.seeds, origin.z);
     lighting.ballCenter.value.copy(jelly.center);
     lighting.ballRadius.value = ball.radius;
     lighting.jellyTint.value.copy(jelly.shadowTint);
@@ -139,11 +207,11 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   let resizeQueued = 0;
   const resize = () => {
     if (resizeQueued) return;
-    resizeQueued = requestAnimationFrame(() => { resizeQueued = 0; resizeView(renderer, rig.camera); });
+    resizeQueued = requestAnimationFrame(() => { resizeQueued = 0; resizeView(renderer, rig.camera, coarse ? MOBILE_MAX_DEVICE_PIXEL_RATIO : undefined); });
   };
   const resizeObserver = new ResizeObserver(resize);
   resizeObserver.observe(document.documentElement);
-  resizeView(renderer, rig.camera);
+  resizeView(renderer, rig.camera, coarse ? MOBILE_MAX_DEVICE_PIXEL_RATIO : undefined);
 
   stage('Warming up');
   present(Number.POSITIVE_INFINITY, 0);
@@ -178,12 +246,17 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
       input.control.jump = held;
       stepWobble(wobble, ball, PHYSICS_STEP);
       sound.step(ball);
+      if (navigator.vibrate && coarse) {
+        if (ball.pickupCount > 0) navigator.vibrate(MERGE_BUZZ_MS);
+        else if (ball.impact > HARD_LANDING_SPEED) navigator.vibrate(HARD_LANDING_BUZZ_MS);
+      }
+      if (ball.seedsSprayed) hud.toast('Seeds sown ahead: they are sprouting down the hill');
       // Each merge: the mushroom is pulled in, droplets fly, the jelly swells where it landed, and it bloops.
       for (let i = 0; i < ball.pickupCount; i++) {
         const pickup = ball.pickups[i];
-        mushrooms.slurp(pickup, ball);
+        jelly.absorb(pickup, ball, merges.start(pickup));
         splash.spawn(pickup, ball);
-        jelly.absorb(pickup, ball, SLURP_SECONDS);
+        popups.spawn(pickup, jelly.center, ball.radius, now);
       }
       accumulator -= PHYSICS_STEP;
       steps++;
@@ -194,9 +267,13 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
 
     present(CHUNKS_PER_FRAME, dt);
     rig.update(ball, origin.z, dt);
+    input.setTilt(tilt.steer());
     hud.update(ball, input.helpShown, dt);
+    alarm.update(ball.radius, ball.wornOut, dt);
+    jelly.setAlarm(alarm.level);
+    hud.setAlarm(alarm.level, alarm.severity > 0);
     sound.frame(ball, dt);
-    probe.update(renderer, jelly.center);
+    if (probeEnabled) probe.update(renderer, jelly.center);
     composite.render();
     frames++;
   };
@@ -212,8 +289,8 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
       throttle: input.control.throttle, steer: input.control.steer, jump: input.control.jump === true,
       squash: wobble.squash, frames,
       radius: ball.radius, merges: ball.merges, wornOut: ball.wornOut, mushroomsDrawn: mushrooms.drawn,
-      airSeconds: ball.airSeconds, magnetSeconds: ball.magnetSeconds,
-      biome: BIOMES[dominantBiome(-ball.z)].name, wear: wearScale(-ball.z),
+      airSeconds: ball.airSeconds, magnetSeconds: ball.magnetSeconds, seedsAlive: ball.seeds.items.filter(i => i.alive).length,
+      biome: BIOMES[dominantBiome(-ball.z)].name, wear: wearScale(-ball.z), holeDepth: ball.hazardDepth, holeKind: ball.hazardKind,
       sound: sound.state, audioContext: sound.contextState, soundsPlayed: sound.played, soundPeak: sound.loudest, muted: sound.muted, helpShown: input.helpShown,
     }),
     place: (s, lateral, lift) => {
@@ -228,6 +305,31 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     },
     resize: radius => { ball.radius = radius; },
     magnet: () => grantMagnet(ball),
+    toggle: (name, on) => {
+      const parts: Record<string, THREE.Object3D> = {
+        terrain: terrain.group, rocks: rocks.mesh, holes: holes.group, mushrooms: mushrooms.group, trail: trail.mesh, splash: splash.mesh,
+        magnets: magnets.group, packets: packets.group, spray: spray.mesh, jelly: jelly.group,
+      };
+      if (name === 'probe') { probeEnabled = on; return; }
+      if (!parts[name]) throw new Error(`unknown part ${name}`);
+      parts[name].visible = on;
+    },
+    probeMerge: (kind, radius) => sound.probeMerge(kind, radius),
+    samples: () => ({ loaded: sound.samplesLoaded, expected: sound.samplesExpected }),
+    seeds: () => { spraySeeds(ball, 1); hud.toast('Seeds sown ahead: they are sprouting down the hill'); },
+    mergeDemo: (kind, radius, look) => {
+      const length = Math.hypot(1, DEMO_RISE);
+      const pickup = ball.pickups[0];
+      pickup.dx = 1 / length; pickup.dy = DEMO_RISE / length; pickup.dz = 0;
+      pickup.distance = ball.radius + radius * MUSHROOM_TOUCH;
+      pickup.radius = radius; pickup.kind = kind; pickup.look = look; pickup.color = 0; pickup.color2 = 3; pickup.seed = 0.37;
+      const before = ball.radius;
+      grow(ball, radius);
+      pickup.jellyRadius = before; pickup.volume = ball.radius ** 3 - before ** 3;
+      jelly.absorb(pickup, ball, merges.start(pickup));
+      splash.spawn(pickup, ball);
+      popups.spawn(pickup, jelly.center, ball.radius, performance.now());
+    },
   };
 
   function stop() {
@@ -236,6 +338,10 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     void renderer.setAnimationLoop(null);
     hud.save();
     input.dispose();
+    tilt.disable();
+    touch.dispose();
+    wakeLock?.release().catch(() => {});
+    document.removeEventListener('visibilitychange', keepAwake);
     sound.dispose();
     resizeObserver.disconnect();
     if (resizeQueued) cancelAnimationFrame(resizeQueued);
@@ -245,7 +351,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
 
   function dispose() {
     stop();
-    composite.dispose(); probe.dispose(); terrain.dispose(); rocks.dispose(); mushrooms.dispose(); splash.dispose(); trail.dispose(); magnets.dispose(); jelly.dispose();
+    composite.dispose(); probe.dispose(); terrain.dispose(); rocks.dispose(); holes.dispose(); mushrooms.dispose(); splash.dispose(); popups.dispose(); trail.dispose(); magnets.dispose(); packets.dispose(); spray.dispose(); jelly.dispose();
     for (const maps of ground) for (const map of Object.values(maps)) map?.dispose();
     environment.dispose();
     renderer.domElement.remove();

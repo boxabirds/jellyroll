@@ -9,6 +9,9 @@ const CENTIMETRES_PER_METRE = 100;
 /** Below this fraction of the way from gone to fresh, the size readout warns. */
 const LOW_SIZE_FRACTION = 0.35;
 const BANNER_SECONDS = 3.5;
+const TOAST_SECONDS = 2.4;
+/** The size readout flashes when it has grown by more than this many centimetres since the last refresh. */
+const GROWTH_PULSE_CM = 0;
 
 /** The blended wear rate at `s` without the per-loop increase, to recover that increase from wearScale. */
 function blendedBase(s: number) {
@@ -31,7 +34,11 @@ export class Hud {
   private readonly banner = document.querySelector<HTMLElement>('#biome-banner')!;
   private readonly bannerName = document.querySelector<HTMLElement>('#biome-banner-name')!;
   private readonly bannerWear = document.querySelector<HTMLElement>('#biome-banner-wear')!;
+  private readonly toastElement = document.querySelector<HTMLElement>('#toast')!;
+  private readonly alarmElement = document.querySelector<HTMLElement>('#alarm')!;
+  private toastSeconds = 0;
   private shownBiome = -1;
+  private lastCentimetres = 0;
   private bannerSeconds = 0;
   private readonly magnet = document.querySelector<HTMLElement>('#magnet')!;
   private readonly magnetSeconds = document.querySelector<HTMLElement>('#magnet-seconds')!;
@@ -46,6 +53,8 @@ export class Hud {
     const distance = ball.distance, speed = ballSpeed(ball);
     this.sinceRefresh += dt;
     this.bannerSeconds = Math.max(0, this.bannerSeconds - dt);
+    this.toastSeconds = Math.max(0, this.toastSeconds - dt);
+    this.toastElement.classList.toggle('shown', this.toastSeconds > 0);
     if (this.sinceRefresh < REFRESH_SECONDS) return;
     this.sinceRefresh = 0;
     this.showBiome(-ball.z);
@@ -54,7 +63,14 @@ export class Hud {
     this.speed.textContent = Math.round(speed * KMH_PER_MS).toString();
     this.best.textContent = formatDistance(this.bestDistance);
     // Diameter, because that is the size you see.
-    this.size.textContent = `${Math.round(ball.radius * 2 * CENTIMETRES_PER_METRE)} cm`;
+    const centimetres = Math.round(ball.radius * 2 * CENTIMETRES_PER_METRE);
+    this.size.textContent = `${centimetres} cm`;
+    // A flash on the readout each time the jelly gets bigger.
+    if (centimetres > this.lastCentimetres + GROWTH_PULSE_CM) {
+      const stat = this.size.parentElement!;
+      stat.classList.remove('grew'); void stat.offsetWidth; stat.classList.add('grew');
+    }
+    this.lastCentimetres = centimetres;
     const life = (ball.radius - MIN_RADIUS) / (START_RADIUS - MIN_RADIUS);
     this.size.parentElement!.classList.toggle('low', life < LOW_SIZE_FRACTION);
     this.merges.textContent = ball.merges.toString();
@@ -66,6 +82,21 @@ export class Hud {
       this.finalDistance.textContent = formatDistance(distance);
       this.finalAir.textContent = formatSeconds(ball.airSeconds);
     }
+  }
+
+  /** The critically-low warning: the screen edges and the size readout flush red with `level` (0..1). */
+  setAlarm(level: number, active: boolean) {
+    this.alarmElement.style.setProperty('--alarm', level.toFixed(3));
+    const stat = this.size.parentElement!;
+    stat.style.setProperty('--alarm', level.toFixed(3));
+    stat.classList.toggle('critical', active);
+  }
+
+  /** A short message under the scores, for a few seconds. */
+  toast(text: string) {
+    this.toastElement.textContent = text;
+    this.toastSeconds = TOAST_SECONDS;
+    this.toastElement.classList.add('shown');
   }
 
   /** Keep the biome label current, and announce each new biome for a few seconds as the jelly crosses into it. */
