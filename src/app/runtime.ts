@@ -4,7 +4,8 @@
  * input → fixed physics steps → world streaming → pose → reflections → draw.
  */
 import * as THREE from 'three/webgpu';
-import { BIOMES, dominantBiome, wearScale } from '../game/biomes.ts';
+import { BIOME_COUNT, BIOME_LENGTH, BIOMES, biomeStretch, dominantBiome, loopOfStretch, wearScale } from '../game/biomes.ts';
+import { hazardLevelBias, setHazardLevelBias } from '../game/hazards.ts';
 import { ballSpeed, createBall, grantMagnet, grow, resetBall, spraySeeds, stepBall } from '../game/physics.ts';
 import { MagnetItems } from '../world/magnet-items.ts';
 import { SeedPacketItems } from '../world/seed-packet-items.ts';
@@ -73,6 +74,8 @@ declare global {
       snapshot: () => DebugSnapshot;
       /** Test hook: drop the jelly at course distance `s`, `lateral` metres right of centre, `lift` metres up. */
       place: (s: number, lateral: number, lift: number) => void;
+      /** Test hook: how many rock instances are drawn, and how many of those carry a near-white colour. */
+      rockColors: () => { count: number; white: number; brightest: number };
       /** Test hook: set the jelly's radius directly (e.g. to check the worn-out screen). */
       resize: (radius: number) => void;
       /** Test hook: switch the magnet on as if one had just been picked up. */
@@ -163,6 +166,37 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     probe.invalidate();
   };
   const input = new Input(restart, () => sound.toggleMute(), () => sound.start());
+  /** Where in a biome the debug jump drops the jelly: past the transition, and past the point where holes start. */
+  const DEBUG_BIOME_OFFSET = 300;
+  const MAX_DEBUG_HOLE_LEVEL = 60;
+  const jumpTo = (s: number, lateral: number, lift: number) => {
+    ball.x = courseCenter(s) + lateral; ball.z = -s;
+    ball.y = terrainHeight(ball.x, ball.z) + ball.radius + lift;
+    ball.vx = 0; ball.vy = 0; ball.vz = -MIN_SPEED;
+    resetWobble(wobble, ball);
+    origin.follow(ball.z);
+    rig.snap(ball, origin.z);
+    trail.reset();
+    probe.invalidate();
+  };
+  /** The world was drawn from the old holes: rebuild all of it now, not a chunk a frame. */
+  const redrawWorld = () => {
+    terrain.invalidate(); rocks.invalidate(); mushrooms.invalidate(); holes.invalidate();
+    present(Number.POSITIVE_INFINITY, 0);
+    probe.invalidate();
+  };
+  input.onDebug = command => {
+    if ('biome' in command) {
+      const loop = loopOfStretch(biomeStretch(-ball.z));
+      jumpTo((loop * BIOME_COUNT + command.biome) * BIOME_LENGTH + DEBUG_BIOME_OFFSET, 0, 0);
+      hud.toast(`Debug: ${BIOMES[command.biome].name}, loop ${loop + 1}`);
+      redrawWorld();
+    } else {
+      setHazardLevelBias(Math.min(MAX_DEBUG_HOLE_LEVEL, Math.max(-MAX_DEBUG_HOLE_LEVEL, hazardLevelBias() + command.holes)));
+      hud.toast(`Debug: holes level ${hazardLevelBias() >= 0 ? '+' : ''}${hazardLevelBias()}`);
+      redrawWorld();
+    }
+  };
   // Touch: a stick, a jump button, and tilt steering from the phone's sensors.
   const tilt = new TiltSensor(text => hud.toast(text));
   const touch = new TouchControls(input, tilt, () => { sound.toggleMute(); return sound.muted; }, text => hud.toast(text));
@@ -293,15 +327,16 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
       biome: BIOMES[dominantBiome(-ball.z)].name, wear: wearScale(-ball.z), holeDepth: ball.hazardDepth, holeKind: ball.hazardKind,
       sound: sound.state, audioContext: sound.contextState, soundsPlayed: sound.played, soundPeak: sound.loudest, muted: sound.muted, helpShown: input.helpShown,
     }),
-    place: (s, lateral, lift) => {
-      ball.x = courseCenter(s) + lateral; ball.z = -s;
-      ball.y = terrainHeight(ball.x, ball.z) + ball.radius + lift;
-      ball.vx = 0; ball.vy = 0; ball.vz = -MIN_SPEED;
-      resetWobble(wobble, ball);
-      origin.follow(ball.z);
-      rig.snap(ball, origin.z);
-      trail.reset();
-      probe.invalidate();
+    place: jumpTo,
+    rockColors: () => {
+      const colors = rocks.mesh.instanceColor?.array ?? new Float32Array(0);
+      let white = 0, brightest = 0;
+      for (let i = 0; i < rocks.mesh.count; i++) {
+        const level = Math.min(colors[i * 3], colors[i * 3 + 1], colors[i * 3 + 2]);
+        brightest = Math.max(brightest, level);
+        if (level > 0.9) white++;
+      }
+      return { count: rocks.mesh.count, white, brightest };
     },
     resize: radius => { ball.radius = radius; },
     magnet: () => grantMagnet(ball),

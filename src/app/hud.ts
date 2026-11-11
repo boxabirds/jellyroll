@@ -30,7 +30,6 @@ export class Hud {
   private readonly merges = document.querySelector<HTMLElement>('#merges')!;
   private readonly air = document.querySelector<HTMLElement>('#air')!;
   private readonly finalAir = document.querySelector<HTMLElement>('#final-air')!;
-  private readonly biome = document.querySelector<HTMLElement>('#biome')!;
   private readonly banner = document.querySelector<HTMLElement>('#biome-banner')!;
   private readonly bannerName = document.querySelector<HTMLElement>('#biome-banner-name')!;
   private readonly bannerWear = document.querySelector<HTMLElement>('#biome-banner-wear')!;
@@ -99,11 +98,9 @@ export class Hud {
     this.toastElement.classList.add('shown');
   }
 
-  /** Keep the biome label current, and announce each new biome for a few seconds as the jelly crosses into it. */
+  /** Announce each new biome for a few seconds as the jelly crosses into it. */
   private showBiome(s: number) {
     const index = dominantBiome(s);
-    const wear = `wear ×${wearScale(s).toFixed(1)}`;
-    this.biome.textContent = `${BIOMES[index].name} · ${wear}`;
     if (index !== this.shownBiome) {
       // The very first biome is not news; every later one is.
       if (this.shownBiome !== -1) {

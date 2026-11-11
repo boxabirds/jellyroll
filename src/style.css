@@ -19,13 +19,6 @@ html, body, #app { height: 100%; margin: 0; overflow: hidden; background: var(--
 #viewport { position: fixed; inset: 0; }
 #viewport canvas { display: block; width: 100%; height: 100%; outline: none; }
 
-.masthead {
-  position: fixed; top: 20px; left: 24px; padding: 10px 16px; border-radius: 16px; pointer-events: none;
-  background: var(--paper); border: 1px solid var(--edge); backdrop-filter: blur(10px);
-}
-.eyebrow { display: block; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-soft); }
-.masthead h1 { margin: 2px 0 0; font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
-.masthead h1 span { color: #4c9a2a; }
 
 .readout {
   position: fixed; top: 20px; right: 24px; display: flex; gap: 22px; align-items: flex-end;
@@ -147,7 +140,6 @@ kbd.wide { padding: 0 10px; }
 }
 @media (prefers-reduced-motion: reduce) { .jelly-mark { animation: none; } }
 @media (max-width: 640px) {
-  .masthead { display: none; }
   .readout { left: 12px; right: 12px; top: 12px; justify-content: space-between; gap: 8px; }
   .hints { display: none; }
 }
@@ -196,7 +188,6 @@ html.touch .touch-only { display: block; }
 
 /* Phones: a compact scoreboard that leaves room for the controls and the view. */
 @media (pointer: coarse) {
-  .masthead { display: none; }
   .readout { top: max(10px, env(safe-area-inset-top)); left: 50%; right: auto; transform: translateX(-50%); gap: 14px; padding: 8px 14px; }
   .readout .stat { min-width: 0; }
   .readout .stat.primary span { font-size: 22px; }
@@ -213,3 +204,6 @@ html.touch .touch-only { display: block; }
   .touch-jump { width: 84px; height: 84px; }
   .toast { top: 64px; }
 }
+
+/* The cursor stays out of the way unless Escape asks for it. */
+html:not(.show-cursor), html:not(.show-cursor) * { cursor: none !important; }

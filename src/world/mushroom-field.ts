@@ -338,6 +338,11 @@ export class MushroomField {
   }
 
   /** Rebuild the standing lists when the jelly enters a new cell, merges something, or the origin hops. */
+  /** Rebuild the collectibles on the next update. */
+  invalidate() {
+    this.cellX = Number.NaN;
+  }
+
   update(worldX: number, worldZ: number, originZ: number, ledger: MushroomLedger) {
     const cellX = mushroomCellIndex(worldX), cellZ = mushroomCellIndex(worldZ);
     if (cellX === this.cellX && cellZ === this.cellZ && originZ === this.originZ && ledger.total === this.taken) return;

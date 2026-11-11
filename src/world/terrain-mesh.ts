@@ -4,13 +4,13 @@
  * construction; a recycled chunk just has its vertex buffers rewritten.
  */
 import * as THREE from 'three/webgpu';
-import { attribute, float, mix, normalMap, positionWorld, sin, smoothstep as smoothstepNode, texture, time, vec2, vec3 } from 'three/tsl';
+import { attribute, float, transformNormalToView, mix, normalMap, positionWorld, sin, smoothstep as smoothstepNode, texture, time, vec2, vec3 } from 'three/tsl';
 import type Node from 'three/src/nodes/core/Node.js';
 import { BIOME_COUNT, BIOME_LENGTH, biomeOfStretch, biomeStretch } from '../game/biomes.ts';
-import { createHazardSample, hazardAt } from '../game/hazards.ts';
+import { createHazardSample, hazardAt, isWaterKind } from '../game/hazards.ts';
 import { smoothstep, valueNoise1, valueNoise2 } from '../game/noise.ts';
 import { createRock, rockCellIndex, rockInCell } from '../game/rocks.ts';
-import { courseCenter, courseHalfWidth, kickerHeight, terrainHeight } from '../game/terrain.ts';
+import { courseCenter, courseHalfWidth, holeLevel, kickerHeight, terrainHeight } from '../game/terrain.ts';
 import { GRADIENT_STEP, KICKER_HEIGHT, WORLD_SEED } from '../game/tuning.ts';
 import { GROUND_LOOKS, HOLE_LOOKS, type GroundLook, type GroundTextures } from './biome-looks.ts';
 import { shadeUnderJelly, type GroundLighting } from './ground-lighting.ts';
@@ -96,9 +96,16 @@ const VARIATION = 1;
 const BLEND = 2;
 const DIRT = 3;
 /** Per vertex, for holes: how deep in one it is, and whether it is the next biome's kind (1) or this one's (0). */
-const HOLE_SIZE = 2;
+const HOLE_SIZE = 4;
 const HOLE_DEPTH_INDEX = 0;
 const HOLE_KIND_INDEX = 1;
+/** And for water: the height of its flat surface (the vertex's own height where there is none) and 1 if it is water at all. */
+const HOLE_LEVEL_INDEX = 2;
+const HOLE_WATER_INDEX = 3;
+/** Water is where the ground is below its surface; the edge of that is eased over this many metres, and the bank is any depth above this. */
+const WATER_EDGE_METRES = 0.1;
+const WATER_BANK_FROM = 0.02;
+const WATER_BANK_TO = 0.1;
 /** The hole's edge is sharpened in the shader between these depths. */
 const HOLE_EDGE_FROM = 0.3;
 const HOLE_EDGE_TO = 0.55;
@@ -141,8 +148,12 @@ function createGroundMaterial(from: number, to: number, textures: readonly Groun
   const material = new THREE.MeshPhysicalNodeMaterial({ metalness: 0, roughness: 1, specularIntensity: GROUND_SPECULAR });
   const data = attribute('tint', 'vec4');
   const variation = data.y as unknown as Node<'float'>;
-  const hole = attribute('hole', 'vec2');
-  const holeMask = smoothstepNode(HOLE_EDGE_FROM, HOLE_EDGE_TO, hole.x);
+  const hole = attribute('hole', 'vec4');
+  // Water lies flat: it is wherever the ground is below the hole's one surface height, and its surface faces straight up.
+  const isWater = hole.w as unknown as Node<'float'>;
+  const wet = mix(float(1), smoothstepNode(0, WATER_EDGE_METRES, hole.z.sub(positionWorld.y)), isWater);
+  const bank = mix(smoothstepNode(HOLE_EDGE_FROM, HOLE_EDGE_TO, hole.x), smoothstepNode(WATER_BANK_FROM, WATER_BANK_TO, hole.x), isWater);
+  const holeMask = bank.mul(wet);
   const holeLookA = HOLE_LOOKS[from], holeLookB = HOLE_LOOKS[to];
   const a = groundLayer(GROUND_LOOKS[from], textures[from], variation);
   const b = groundLayer(GROUND_LOOKS[to], textures[to], variation);
@@ -157,7 +168,8 @@ function createGroundMaterial(from: number, to: number, textures: readonly Groun
   const holeColor = mix(vec3(...holeLookA.color), vec3(...holeLookB.color), hole.y).mul(shimmer);
   const albedo = mix(surface, holeColor, holeMask) as unknown as Node<'vec3'>;
   material.colorNode = shadeUnderJelly(albedo, lighting);
-  material.normalNode = mix(a.normal, b.normal, blend).normalize();
+  const level = transformNormalToView(vec3(0, 1, 0));
+  material.normalNode = mix(mix(a.normal, b.normal, blend), level, holeMask.mul(isWater)).normalize();
   material.roughnessNode = mix(mix(a.roughness, b.roughness, blend), mix(float(holeLookA.roughness), float(holeLookB.roughness), hole.y), holeMask);
   const pulse = sin(time.mul(GLOW_PULSE_RATE).add(positionWorld.x.mul(GLOW_PULSE_PER_METRE))).mul(GLOW_PULSE).add(1 - GLOW_PULSE);
   const groundGlow = textures[from].emission || textures[to].emission ? mix(a.glow, b.glow, blend).mul(pulse).mul(data.x) : vec3(0);
@@ -259,6 +271,11 @@ export class TerrainMesh {
     }
   }
 
+  /** Forget what every chunk shows, so the next update refills them all. */
+  invalidate() {
+    for (const chunk of this.chunks) chunk.index = UNASSIGNED;
+  }
+
   dispose() {
     for (const chunk of this.chunks) chunk.mesh.geometry.dispose();
     for (const material of this.materials) material.dispose();
@@ -325,8 +342,12 @@ export class TerrainMesh {
         tints[t + BLEND] = smoothstep(boundary - EDGE_BAND, boundary + EDGE_BAND, s + wander);
         tints[t + DIRT] = Math.min(1, kickerHeight(x, s) / KICKER_HEIGHT);
         t += TINT_SIZE;
-        holes[holeIndex + HOLE_DEPTH_INDEX] = hazardAt(x - centre, s, halfWidth, this.hole);
+        const depth = hazardAt(x - centre, s, halfWidth, this.hole);
+        const water = depth > 0 && isWaterKind(this.hole.kind);
+        holes[holeIndex + HOLE_DEPTH_INDEX] = depth;
         holes[holeIndex + HOLE_KIND_INDEX] = this.hole.kind === nextBiome ? 1 : 0;
+        holes[holeIndex + HOLE_LEVEL_INDEX] = water ? holeLevel(this.hole) : h;
+        holes[holeIndex + HOLE_WATER_INDEX] = water ? 1 : 0;
         holeIndex += HOLE_SIZE;
       }
     }

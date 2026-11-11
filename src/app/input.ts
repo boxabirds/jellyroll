@@ -11,7 +11,13 @@ const MUTE_KEY = 'KeyM';
 /** Help is asked for by the character typed, wherever "?" lives on the keyboard. */
 const HELP_CHARACTER = '?';
 const CLOSE_HELP_KEY = 'Escape';
+/** Debug: the digits 1 to 5 jump to that biome; - and = make the holes smaller and bigger. */
+const BIOME_KEYS = /^[1-5]$/;
+const HOLES_SMALLER_KEY = '-';
+const HOLES_BIGGER_KEYS = ['=', '+'];
 const HANDLED_KEYS = new Set<string>([...ACCELERATE_KEYS, ...DECELERATE_KEYS, ...LEFT_KEYS, ...RIGHT_KEYS, JUMP_KEY, RESTART_KEY, MUTE_KEY]);
+
+export type DebugCommand = { biome: number } | { holes: number };
 
 export class Input {
   /** Mutated in place; the physics step reads it directly. */
@@ -29,6 +35,8 @@ export class Input {
   private readonly onRestart: () => void;
   private readonly onMute: () => void;
   private readonly onGesture: () => void;
+  /** Debug keys are passed here. */
+  onDebug: (command: DebugCommand) => void = () => {};
 
   /** `onGesture` fires on every handled key press: the browser's cue that audio may start. */
   constructor(onRestart: () => void, onMute: () => void, onGesture: () => void) {
@@ -47,7 +55,17 @@ export class Input {
   private readonly keydown = (event: KeyboardEvent) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.key === HELP_CHARACTER) { if (!event.repeat) this.helpShown = !this.helpShown; event.preventDefault(); return; }
-    if (event.code === CLOSE_HELP_KEY) { this.helpShown = false; return; }
+    if (event.code === CLOSE_HELP_KEY) {
+      this.helpShown = false;
+      // The cursor is hidden while playing; Escape brings it back, and sends it away again.
+      if (!event.repeat) document.documentElement.classList.toggle('show-cursor');
+      return;
+    }
+    if (!event.repeat) {
+      if (BIOME_KEYS.test(event.key)) { this.onDebug({ biome: Number(event.key) - 1 }); return; }
+      if (event.key === HOLES_SMALLER_KEY) { this.onDebug({ holes: -1 }); return; }
+      if (HOLES_BIGGER_KEYS.includes(event.key)) { this.onDebug({ holes: 1 }); return; }
+    }
     if (!HANDLED_KEYS.has(event.code)) return;
     event.preventDefault();
     this.onGesture();

@@ -342,6 +342,22 @@ export const HAZARD_RADIUS_SPREAD = 0.4;
 export const HAZARD_EDGE = 1.3;
 /** How far (metres) a hole sinks below the ground at its centre. */
 export const HAZARD_DEPTH = 0.4;
+/**
+ * Ponds and oases are water, and water lies flat. A pond's surface is at the average height of its
+ * rim. Inside, the ground is cut down on the high side and built up on the low side to a flat floor
+ * HAZARD_POOL_DEPTH below that surface, by no more than HAZARD_POOL_MAX_DIP either way. So on level
+ * ground the pool is a full flat-bottomed pond; on a slope the middle holds water, and where the
+ * ground is too steep for the cut and fill to reach, only a bit of water shows under tall steep
+ * sides. The jelly is in the water once the ground under it is below the surface, with a margin of
+ * HAZARD_WET_FADE metres to ease in.
+ */
+export const HAZARD_POOL_DEPTH = 0.4;
+export const HAZARD_POOL_MAX_DIP = 0.8;
+/** A water hole's bank is this wide (metres), so that cutting a pool down into a slope never leaves a wall too steep to climb. */
+export const HAZARD_WATER_EDGE = 5;
+export const HAZARD_WET_FADE = 0.15;
+/** Points around a hole's rim sampled to find its lowest. */
+export const HAZARD_RIM_SAMPLES = 16;
 /** The clear lanes: how many, how far apart, how much each wanders, how wide (half width) at first and in the limit, and the soft edge. */
 export const HAZARD_LANES = 3;
 export const HAZARD_LANE_SPACING = 8.4;

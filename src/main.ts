@@ -7,7 +7,6 @@ import './style.css';
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <main id="viewport" aria-label="Jellyland"></main>
-  <header class="masthead"><span class="eyebrow" id="biome">an endless downhill</span><h1>jellyland<span>.</span></h1></header>
   <aside class="readout" aria-label="Run statistics">
     <div class="stat primary"><span id="distance">0 m</span><label>score</label></div>
     <div class="stat"><span><b id="speed">0</b> km/h</span><label>speed</label></div>

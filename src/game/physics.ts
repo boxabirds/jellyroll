@@ -5,13 +5,13 @@
  */
 import { mushroomCellIndex, mushroomInCell, createMushroom, createMushroomLedger, isMushroomTaken, resetMushroomLedger, takeMushroom, type MushroomLedger } from './mushrooms.ts';
 import { speedScale, steerScale, wearScale } from './biomes.ts';
-import { createHazardSample, hazardAt, type HazardSample } from './hazards.ts';
+import { createHazardSample, type HazardSample } from './hazards.ts';
 import { createMagnet, magnetInSegment, magnetSegment } from './magnets.ts';
 import { createSeedPacket, seedPacketInSegment, seedPacketSegment } from './seed-packets.ts';
 import { advanceSeeds, clearSeeds, createSeedField, plantSeeds, sproutScale, type SeedField } from './seeds.ts';
 import { clamp } from './noise.ts';
 import { createRock, rockCellIndex, rockInCell } from './rocks.ts';
-import { courseCenter, courseDrift, courseHalfWidth, terrainHeight, terrainNormal } from './terrain.ts';
+import { courseCenter, courseDrift, courseHalfWidth, holeEffectAt, terrainHeight, terrainNormal } from './terrain.ts';
 import {
   AIR_CONTROL,
   MUSHROOM_CELL,
@@ -417,7 +417,7 @@ const hole: HazardSample = createHazardSample();
  */
 function applyHole(ball: Ball, dt: number, minSpeed: number): void {
   const s = -ball.z;
-  const depth = hazardAt(ball.x - courseCenter(s), s, courseHalfWidth(s), hole);
+  const depth = holeEffectAt(ball.x, ball.z, hole);
   ball.hazardDepth = depth;
   if (depth === 0) { ball.venting = false; return; }
   ball.hazardKind = hole.kind;

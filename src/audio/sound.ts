@@ -12,7 +12,7 @@ import { BIOME_COUNT, DUNES, ICE, LAVA, MEADOW } from '../game/biomes.ts';
 import type { Ball } from '../game/physics.ts';
 import { MUSHROOM_MAX_RADIUS, MUSHROOM_MIN_RADIUS } from '../game/tuning.ts';
 import { DRONE_NOTES, DRONE_VELOCITY, JP8, droneCutoff, dronePatch } from './drone.ts';
-import { allSampleFiles, landingVariants, mergeVariants, type SampleVariant } from './sample-sounds.ts';
+import { allSampleFiles, holeVariants, landingVariants, mergeVariants, type HoleSound, type SampleVariant } from './sample-sounds.ts';
 import jp8WasmUrl from './jp8/jp8_wasm_bg.wasm?url';
 import { holeHiss, holeSizzle, holeSplash, holeStab } from './hazard-sounds.ts';
 import { renderLayers } from './sfx-render.ts';
@@ -61,6 +61,14 @@ const IMPACT_GAP_MS = 150;
 /** A hole is entered once the jelly is this far into it; the next entry sound waits at least this long. */
 const HOLE_ENTER_DEPTH = 0.5;
 const HOLE_GAP_MS = 350;
+/** While the jelly stays in water or lava it keeps sloshing or bubbling, this often (milliseconds). */
+const HOLE_WADE_GAP_MS = 420;
+const WADE_GAIN = 0.55;
+/** A plunge is quietest at this speed (m/s) or less and loudest at FULL_PLUNGE_SPEED; a faster fall also plays lower. */
+const SOFT_PLUNGE_SPEED = 3;
+const FULL_PLUNGE_SPEED = 20;
+const PLUNGE_MIN_GAIN = 0.5;
+const PLUNGE_SLOW_RATE = 0.9;
 /** How long the test probe listens for the output after playing something. */
 const PROBE_LISTEN_MS = 600;
 /** Several merges in one instant (a magnet's first sweep) would stack into a bang; they are spread this far apart. */
@@ -136,6 +144,7 @@ export class JellySound {
   private lastImpact = Number.NEGATIVE_INFINITY;
   private inHole = false;
   private lastHole = Number.NEGATIVE_INFINITY;
+  private lastWade = Number.NEGATIVE_INFINITY;
   private cutoff = droneCutoff(0);
   private sentCutoff = 0;
 
@@ -212,18 +221,33 @@ export class JellySound {
     }
   }
 
-  /** Falling into a hole, being stabbed by a shard, and a vent throwing the jelly. */
+  /** Falling into a hole, being stabbed by a shard, a vent throwing the jelly, and wading on through it. Recorded sounds first, ZzFX until they load. */
   private holeSounds(ball: Ball, now: number) {
     const inside = ball.hazardDepth >= HOLE_ENTER_DEPTH && ball.grounded;
+    const kind = ball.hazardKind;
+    const water = kind === MEADOW || kind === DUNES;
     if (inside && !this.inHole && now - this.lastHole >= HOLE_GAP_MS) {
-      this.lastHole = now;
-      if (ball.hazardKind === MEADOW || ball.hazardKind === DUNES) this.play(takeKey('splash', this.nextTake()));
-      else if (ball.hazardKind === LAVA) this.play(takeKey('sizzle', this.nextTake()));
-      else if (ball.hazardKind === ICE) this.play(takeKey('stab', this.nextTake()), 0.8, 0.7);
+      this.lastHole = now; this.lastWade = now;
+      const speed = Math.hypot(ball.vx, ball.vz);
+      const strength = Math.min(1, Math.max(0, (speed - SOFT_PLUNGE_SPEED) / (FULL_PLUNGE_SPEED - SOFT_PLUNGE_SPEED)));
+      const gain = PLUNGE_MIN_GAIN + (1 - PLUNGE_MIN_GAIN) * strength;
+      const rate = 1 - (1 - PLUNGE_SLOW_RATE) * strength;
+      if (water) this.holeSample('splash', rate, gain, () => this.play(takeKey('splash', this.nextTake()), rate, gain));
+      else if (kind === LAVA) this.holeSample('lava', rate, gain, () => this.play(takeKey('sizzle', this.nextTake()), rate, gain));
+      else if (kind === ICE) this.holeSample('stab', 1, 0.7, () => this.play(takeKey('stab', this.nextTake()), 0.8, 0.7));
+    } else if (inside && (water || kind === LAVA) && now - this.lastWade >= HOLE_WADE_GAP_MS) {
+      this.lastWade = now;
+      this.holeSample(water ? 'wade' : 'bloop', 1, WADE_GAIN, () => {});
     }
     this.inHole = inside;
-    if (ball.stabs > 0) this.play(takeKey('stab', this.nextTake()));
-    if (ball.vented) this.play(takeKey('hiss', this.nextTake()));
+    if (ball.stabs > 0) this.holeSample('stab', 1, 1, () => this.play(takeKey('stab', this.nextTake())));
+    if (ball.vented) this.holeSample('hiss', 1, 1, () => this.play(takeKey('hiss', this.nextTake())));
+  }
+
+  /** Play a random recorded recipe for a hole event, or `fallback` if the files have not loaded. */
+  private holeSample(sound: HoleSound, rate: number, gain: number, fallback: () => void) {
+    const variants = holeVariants(sound);
+    if (!this.playVariant(variants[Math.floor(Math.random() * variants.length)], rate, gain, 0)) fallback();
   }
 
   /**

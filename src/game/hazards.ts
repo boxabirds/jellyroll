@@ -6,7 +6,7 @@
  * Holes also cover the banks up to the ridge barrier, so riding up the wall is
  * no way round them.
  */
-import { BIOME_LENGTH, dominantBiome } from './biomes.ts';
+import { BIOME_LENGTH, DUNES, MEADOW, dominantBiome } from './biomes.ts';
 import { hash2, smoothstep } from './noise.ts';
 import {
   HAZARD_BANK_OVERRUN,
@@ -27,6 +27,7 @@ import {
   HAZARD_RADIUS_END,
   HAZARD_RADIUS_SPREAD,
   HAZARD_RADIUS_START,
+  HAZARD_WATER_EDGE,
   RIDGE_BARRIER_INSET,
   RIDGE_DISTANCE,
   WORLD_SEED,
@@ -46,15 +47,39 @@ export type HazardSample = {
   depth: number;
   /** The biome whose kind of hole this is. */
   kind: number;
+  /** The hole this point is in: its grid cell and its disc in valley coordinates. */
+  cellI: number; cellJ: number; centreU: number; centreS: number; radius: number;
 };
 
 export function createHazardSample(): HazardSample {
-  return { depth: 0, kind: 0 };
+  return { depth: 0, kind: 0, cellI: 0, cellJ: 0, centreU: 0, centreS: 0, radius: 0 };
+}
+
+/**
+ * Debug: biomes' worth of growth added to (or taken from) the holes wherever the jelly is. Zero in play.
+ * Anything that remembers what the holes were is told to forget (see onHazardsChanged).
+ */
+let levelBias = 0;
+const changeListeners: Array<() => void> = [];
+
+export function hazardLevelBias(): number {
+  return levelBias;
+}
+
+export function setHazardLevelBias(bias: number): void {
+  levelBias = bias;
+  cacheState.fill(NO_ENTRY);
+  for (const listener of changeListeners) listener();
+}
+
+export function onHazardsChanged(listener: () => void): void {
+  changeListeners.push(listener);
 }
 
 /** 0 at the start of the run, rising toward 1 as biomes go by: how big and how many the holes have got. */
 export function hazardShape(s: number): number {
-  return 1 - Math.exp(-Math.max(0, s - HAZARD_FREE_UNTIL) / BIOME_LENGTH / HAZARD_GROWTH_BIOMES);
+  const passed = Math.max(0, s - HAZARD_FREE_UNTIL) / BIOME_LENGTH + levelBias;
+  return 1 - Math.exp(-Math.max(0, passed) / HAZARD_GROWTH_BIOMES);
 }
 
 export function laneHalfWidth(s: number): number {
@@ -80,6 +105,11 @@ function laneShelter(u: number, s: number): number {
 /** How far across the valley (from its centre line) holes reach at a place where the valley is `halfWidth` wide. */
 export function hazardReach(halfWidth: number): number {
   return halfWidth + RIDGE_DISTANCE - RIDGE_BARRIER_INSET + HAZARD_BANK_OVERRUN;
+}
+
+/** Ponds and oases are water; the other holes are not. */
+export function isWaterKind(kind: number): boolean {
+  return kind === MEADOW || kind === DUNES;
 }
 
 /** One hole before the lanes are cut out of it: a disc in valley coordinates. */
@@ -158,12 +188,13 @@ export function hazardAt(u: number, s: number, halfWidth: number, out: HazardSam
   const absU = Math.abs(u);
   if (absU > reach + HAZARD_EDGE) return 0;
   const cellU = holeCellIndex(u), cellS = holeCellIndex(s);
-  let best = 0, bestKind = 0;
+  let best = 0, bestKind = 0, bestI = 0, bestJ = 0, bestU = 0, bestS = 0, bestRadius = 0;
   for (let ds = -NEIGHBOURS; ds <= NEIGHBOURS; ds++) {
     for (let du = -NEIGHBOURS; du <= NEIGHBOURS; du++) {
       if (!holeInCell(cellU + du, cellS + ds, disc)) continue;
-      const inside = smoothstep(disc.radius, disc.radius - HAZARD_EDGE, Math.hypot(u - disc.u, s - disc.s));
-      if (inside > best) { best = inside; bestKind = disc.kind; }
+      const edge = isWaterKind(disc.kind) ? Math.min(HAZARD_WATER_EDGE, disc.radius) : HAZARD_EDGE;
+      const inside = smoothstep(disc.radius, disc.radius - edge, Math.hypot(u - disc.u, s - disc.s));
+      if (inside > best) { best = inside; bestKind = disc.kind; bestI = cellU + du; bestJ = cellS + ds; bestU = disc.u; bestS = disc.s; bestRadius = disc.radius; }
     }
   }
   if (best === 0) return 0;
@@ -172,5 +203,6 @@ export function hazardAt(u: number, s: number, halfWidth: number, out: HazardSam
   if (depth === 0) return 0;
   out.depth = depth;
   out.kind = bestKind;
+  out.cellI = bestI; out.cellJ = bestJ; out.centreU = bestU; out.centreS = bestS; out.radius = bestRadius;
   return depth;
 }

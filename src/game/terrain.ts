@@ -5,7 +5,7 @@
  * disagree about where the ground is.
  */
 import { hillScale, mogulScale, widthScale } from './biomes.ts';
-import { createHazardSample, hazardAt } from './hazards.ts';
+import { createHazardSample, hazardAt, isWaterKind, onHazardsChanged, type HazardSample } from './hazards.ts';
 import { hash2, smoothstep, valueNoise1, valueNoise2 } from './noise.ts';
 import {
   BOWL_CURVATURE,
@@ -14,6 +14,10 @@ import {
   GROOVE_LENGTH,
   GROOVE_WIDTH,
   HAZARD_DEPTH,
+  HAZARD_POOL_DEPTH,
+  HAZARD_POOL_MAX_DIP,
+  HAZARD_RIM_SAMPLES,
+  HAZARD_WET_FADE,
   HILL_AMPLITUDE,
   HILL_WAVELENGTH,
   KICKER_CHANCE,
@@ -129,11 +133,9 @@ export function kickerHeight(x: number, s: number): number {
   return KICKER_HEIGHT * profile * lateral;
 }
 
-export function terrainHeight(x: number, z: number): number {
-  const s = -z;
-  const offset = x - courseCenter(s);
+/** The ground without any holes in it. */
+function groundHeight(x: number, s: number, offset: number, halfWidth: number): number {
   const u = Math.abs(offset);
-  const halfWidth = courseHalfWidth(s);
   const beyond = u - halfWidth;
   // Past the ridge the land is distant scenery drawn with very coarse cells:
   // the bowl stops climbing and fine relief fades out, leaving broad hills.
@@ -151,9 +153,66 @@ export function terrainHeight(x: number, z: number): number {
     GROOVE_AMPLITUDE * inValley * valueNoise2(x / GROOVE_WIDTH, s / GROOVE_LENGTH, SEED_GROOVES) +
     MOGUL_AMPLITUDE * rough * valueNoise2(x / MOGUL_WAVELENGTH, s / MOGUL_WAVELENGTH, SEED_MOGULS) +
     RIPPLE_AMPLITUDE * rough * valueNoise2(x / RIPPLE_WAVELENGTH, s / RIPPLE_WAVELENGTH, SEED_RIPPLE) +
-    kickerHeight(x, s) -
-    HAZARD_DEPTH * hazardAt(offset, s, halfWidth, holeScratch)
+    kickerHeight(x, s)
   );
+}
+
+/** Stands in for the water level of a hole that is not water: above anything, so the whole hole counts as wet. */
+export const NO_WATER_LEVEL = 1e6;
+
+const LEVEL_SLOTS = 2048;
+const LEVEL_MASK = LEVEL_SLOTS - 1;
+const levelI = new Int32Array(LEVEL_SLOTS);
+const levelJ = new Int32Array(LEVEL_SLOTS);
+const levelKnown = new Uint8Array(LEVEL_SLOTS);
+const levelValue = new Float64Array(LEVEL_SLOTS);
+
+onHazardsChanged(() => levelKnown.fill(0));
+
+/**
+ * Height of the water surface of the hole `hole` was sampled in: the average ground height on its rim, or
+ * NO_WATER_LEVEL if it is not a water hole. Remembered per hole, since every nearby height sample asks.
+ */
+export function holeLevel(hole: HazardSample): number {
+  if (!isWaterKind(hole.kind)) return NO_WATER_LEVEL;
+  const slot = ((Math.imul(hole.cellI, 73856093) ^ Math.imul(hole.cellJ, 19349663)) >>> 0) & LEVEL_MASK;
+  if (levelKnown[slot] && levelI[slot] === hole.cellI && levelJ[slot] === hole.cellJ) return levelValue[slot];
+  let total = 0;
+  for (let k = 0; k < HAZARD_RIM_SAMPLES; k++) {
+    const angle = (k / HAZARD_RIM_SAMPLES) * TAU;
+    const s = hole.centreS + Math.sin(angle) * hole.radius;
+    const offset = hole.centreU + Math.cos(angle) * hole.radius;
+    const x = courseCenter(s) + offset;
+    total += groundHeight(x, s, offset, courseHalfWidth(s));
+  }
+  const level = total / HAZARD_RIM_SAMPLES;
+  levelI[slot] = hole.cellI; levelJ[slot] = hole.cellJ; levelKnown[slot] = 1; levelValue[slot] = level;
+  return level;
+}
+
+export function terrainHeight(x: number, z: number): number {
+  const s = -z;
+  const offset = x - courseCenter(s);
+  const halfWidth = courseHalfWidth(s);
+  const ground = groundHeight(x, s, offset, halfWidth);
+  const depth = hazardAt(offset, s, halfWidth, holeScratch);
+  if (depth === 0) return ground;
+  if (!isWaterKind(holeScratch.kind)) return ground - HAZARD_DEPTH * depth;
+  // Water lies flat: the ground is cut down on the high side and built up on the low side to a flat pool floor, as far as the cap allows.
+  const dip = Math.min(HAZARD_POOL_MAX_DIP, Math.max(-HAZARD_POOL_MAX_DIP, ground - holeLevel(holeScratch) + HAZARD_POOL_DEPTH));
+  return ground - depth * dip;
+}
+
+/**
+ * How much of a hole the point (x, z) is in, counting only what is hurting: a point in a pond but on
+ * dry ground above its water is not in the hole. `out` gets the hole's depth and kind as in hazardAt.
+ */
+export function holeEffectAt(x: number, z: number, out: HazardSample): number {
+  const s = -z;
+  const depth = hazardAt(x - courseCenter(s), s, courseHalfWidth(s), out);
+  if (depth === 0 || !isWaterKind(out.kind)) return depth;
+  const wet = Math.min(1, Math.max(0, (holeLevel(out) - terrainHeight(x, z)) / HAZARD_WET_FADE));
+  return depth * wet;
 }
 
 /** Unit surface normal at (x, z), written into `out`. Returns the height there. */

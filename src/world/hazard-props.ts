@@ -134,6 +134,11 @@ export class HazardProps {
     this.animate(originZ, clock);
   }
 
+  /** Rebuild the props on the next update. */
+  invalidate() {
+    this.cellS = Number.NaN;
+  }
+
   dispose() {
     for (const mesh of [this.shards, this.puffs, this.bubbles]) {
       mesh.geometry.dispose();

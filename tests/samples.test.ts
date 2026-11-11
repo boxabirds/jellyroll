@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { test } from 'node:test';
-import { allSampleFiles, HARD_LANDING_FROM, landingVariants, mergeVariants } from '../src/audio/sample-sounds.ts';
+import { allSampleFiles, HARD_LANDING_FROM, holeVariants, landingVariants, mergeVariants, type HoleSound } from '../src/audio/sample-sounds.ts';
 import { DUNES, ICE, LAVA, MEADOW, SCREE } from '../src/game/biomes.ts';
 
 const DIR = new URL('../src/audio/samples/', import.meta.url);
+const HOLE_SOUNDS: HoleSound[] = ['splash', 'wade', 'stab', 'hiss', 'lava', 'bloop'];
 const MIN_RATE = 0.7, MAX_RATE = 1.4, MAX_DELAY_SECONDS = 0.25;
 
 test('every recorded sound the recipes name exists, is a real audio file, and nothing unused is shipped', () => {
@@ -19,7 +20,7 @@ test('every recorded sound the recipes name exists, is a real audio file, and no
 });
 
 test('every recipe is well formed: sane pitch, loudness and timing', () => {
-  const all = [MEADOW, ICE, DUNES, SCREE].flatMap(kind => [...mergeVariants(kind)!]).concat([...landingVariants(0), ...landingVariants(1)]);
+  const all = [MEADOW, ICE, DUNES, SCREE].flatMap(kind => [...mergeVariants(kind)!]).concat([...landingVariants(0), ...landingVariants(1)], HOLE_SOUNDS.flatMap(name => [...holeVariants(name)]));
   for (const variant of all) {
     assert.ok(variant.length >= 1 && variant.length <= 3);
     assert.ok(variant[0].delay === 0, 'the first layer starts at once');
@@ -48,4 +49,13 @@ test('landings: one soft recipe, and hard ones that pair each heavy thud with th
   assert.equal(hard.length, 2);
   assert.deepEqual(hard.map(v => v[0].file).sort(), ['kenney-impact-impactSoft_heavy_000.ogg', 'kenney-impact-impactSoft_heavy_002.ogg']);
   for (const variant of hard) assert.ok(variant.some(layer => layer.file.includes('squishsplat_impact')));
+});
+
+test('the holes have real recorded sounds: seven splashes for water, glass and snow for shards, five hisses, fire and bubbles for lava', () => {
+  const files = (name: HoleSound) => holeVariants(name).flat().map(layer => layer.file);
+  assert.ok(holeVariants('splash').length >= 7 && files('splash').filter(file => file.includes('splash_')).length >= 7);
+  assert.ok(files('stab').some(file => file.includes('impactGlass_heavy')) && files('stab').some(file => file.includes('snow')));
+  assert.equal(holeVariants('hiss').length, 5);
+  assert.ok(files('lava').some(file => file.includes('fire-crackle')) && files('lava').some(file => file.includes('bubble')));
+  assert.ok(files('wade').every(file => file.includes('splash_')) && files('bloop').every(file => file.includes('bubble')));
 });
