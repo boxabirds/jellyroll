@@ -1,6 +1,6 @@
 """End-to-end check of the world table in real Chrome, against the local stack.
 
-Usage: uv run --with playwright scripts/e2e-scores.py <game-url> <out-dir>
+Usage: uv run --with playwright tests/e2e-scores.test.py <game-url> <out-dir>
 The score server's flood limit allows 5 scores per address per 10 minutes, and only the top ten rolls make the leaderboard, so this
 clears the local flood, score and run tables first.
 Needs `npm run stack` (the score server, port 8787) and the game's dev server, whose /api proxies to it.

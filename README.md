@@ -184,7 +184,7 @@ To see the name screen without playing, open the game with `?test=leaderboard-en
 (for example `http://localhost:5173/?test=leaderboard-entry`): a moment after loading the
 jelly wears away with a small score, and if the local table has a free place you get the
 giant letters at once. Press `R` and wait for the next wear-out for another go, or fill
-the table (`scripts/e2e-scores.py` shows how) to see the "would be 11th" message instead.
+the table (`tests/e2e-scores.test.py` shows how) to see the "would be 11th" message instead.
 
 The local secrets are in `worker/.dev.vars` (not committed), and the local
 database is under `worker/.wrangler/`. `npm run test:worker` runs the server
@@ -255,7 +255,7 @@ The second command drives the running dev server in real Chrome with real key
 presses, writes screenshots, and prints the game state; see the docstring in
 `scripts/drive.py`.
 
-`scripts/e2e-scores.py` plays the whole world-table flow in real Chrome against the
+`tests/e2e-scores.test.py` plays the whole world-table flow in real Chrome against the
 local stack: a registered run that checks in, giant letters with the nine-letter
 limit, a blocked name then a good one, the highlighted table row, a debug-key run,
 and a run with the server down.
