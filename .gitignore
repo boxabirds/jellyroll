@@ -6,3 +6,4 @@ shots
 .dev.vars
 .wrangler
 worker/.wrangler
+docs/*.mp4
