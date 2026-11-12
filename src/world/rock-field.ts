@@ -84,6 +84,9 @@ export class RockField {
     // The colours are rewritten whenever the rocks are, so their buffer must be dynamic too: made on the
     // first rebuild it would be a static one, and a static buffer can keep showing the old rocks' colours.
     for (let i = 0; i < MAX_ROCKS; i++) this.mesh.setColorAt(i, this.color.setScalar(1));
+    // Sent every frame: marked static, these were seen to show a stale list for a frame (the rocks flashed).
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.mesh.instanceColor!.setUsage(THREE.DynamicDrawUsage);
     this.mesh.count = 0;
     // Instances are spread along hundreds of metres; the single-rock bounding
     // sphere would cull the whole field.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BIOME_LENGTH, BIOME_ORDER, BIOMES, CAVE, LAVA, DUNES, caveAt, positionOfBiome } from '../src/game/biomes.ts';
+import { BIOME_LENGTH, BIOME_ORDER, BIOMES, CAVE, LAVA, DUNES, caveAt, firstStretchOf, positionOfBiome } from '../src/game/biomes.ts';
 import { createHazardSample, hazardAt } from '../src/game/hazards.ts';
 import { createBall, grantGlass, stepBall } from '../src/game/physics.ts';
 import { isRockBroken } from '../src/game/rocks.ts';
@@ -9,7 +9,7 @@ import { courseCenter, courseHalfWidth } from '../src/game/terrain.ts';
 import { PHYSICS_STEP, STALACTITE_DAMAGE } from '../src/game/tuning.ts';
 
 const idle = { throttle: 0, steer: 0, jump: false };
-const CAVE_MIDDLE = (positionOfBiome(CAVE) + 0.5) * BIOME_LENGTH;
+const CAVE_MIDDLE = (firstStretchOf(CAVE) + 0.5) * BIOME_LENGTH;
 
 /** The first spike of a kind near the valley floor in the middle of the cave that passes `ok`. */
 function find(inCell: (x: number, z: number, out: Spike) => boolean, ok: (spike: Spike) => boolean): { spike: Spike; cellX: number; cellZ: number } {
@@ -33,7 +33,8 @@ test('the cave comes between the dunes and the lava', () => {
 test('stalagmites and stalactites are only in the cave, are everywhere in it, and stalagmites keep out of the pools', () => {
   const spike = createSpike(), sample = createHazardSample();
   let standing = 0, hanging = 0, falling = 0, elsewhere = 0;
-  for (let s = 0; s < BIOME_LENGTH * BIOME_ORDER.length; s += 6) {
+  // The first cave, with the stretch before it and the one after it.
+  for (let s = (firstStretchOf(CAVE) - 1) * BIOME_LENGTH; s < (firstStretchOf(CAVE) + 2) * BIOME_LENGTH; s += 6) {
     const cellZ = spikeCellIndex(-s), centre = spikeCellIndex(courseCenter(s));
     for (let dx = -3; dx <= 3; dx++) {
       const ground = stalagmiteInCell(centre + dx, cellZ, spike);
@@ -72,6 +73,28 @@ test('the jelly bounces off a stalagmite; a glass marble knocks it over and roll
   assert.equal(marble.toppled, 1);
   assert.ok(isRockBroken(marble.ball.toppledSpikes, cellX, cellZ));
   assert.ok(marble.ball.z < spike.z - 1, 'the marble rolled on past where it stood');
+  assert.ok(marble.ball.vz < -9.5, `the marble is not slowed by it (${marble.ball.vz.toFixed(2)} m/s of 10)`);
+  assert.ok(plain.ball.vz > marble.ball.vz, 'the jelly is slowed by the post, the marble is not');
+});
+
+test('a glass marble smashes a stalactite it touches, hanging or falling, and is not hurt; a jelly does not', () => {
+  const { spike, cellX, cellZ } = find(stalactiteInCell, s => !s.falls);
+  const touch = (glass: boolean) => {
+    const ball = createBall();
+    // Up against the tip of the stalactite, as if it had jumped.
+    ball.x = spike.x; ball.z = spike.z; ball.y = spike.y + spike.tip + 0.2; ball.vx = 0; ball.vy = 0; ball.vz = -8;
+    if (glass) grantGlass(ball);
+    const before = ball.radius;
+    let landed = 0;
+    for (let i = 0; i < 3; i++) { stepBall(ball, idle, PHYSICS_STEP); landed += ball.landedCount; }
+    return { ball, before, landed };
+  };
+  const marble = touch(true);
+  assert.ok(marble.landed >= 1, 'it goes to pieces');
+  assert.ok(isRockBroken(marble.ball.fallenSpikes, cellX, cellZ), 'and is gone from the roof');
+  assert.ok(marble.ball.radius >= marble.before * 0.999, 'the marble is not hurt');
+  const jelly = touch(false);
+  assert.equal(isRockBroken(jelly.ball.fallenSpikes, cellX, cellZ), false, 'a jelly passes the hanging stalactite untouched');
 });
 
 test('a stalactite lets go as the jelly comes, lands near where the jelly is, and hurts if it strikes (but not a marble)', () => {

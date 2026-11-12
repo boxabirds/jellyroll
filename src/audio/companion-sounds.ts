@@ -21,6 +21,16 @@ export function glassPickup(random: Random = Math.random): Layer[] {
   ];
 }
 
+/** Finding a seed packet: a quick paper rustle, then two small rising dings, like something dropped into a pocket. */
+export function packetPickup(random: Random = Math.random): Layer[] {
+  const root = 880 * jitter(random, PITCH_JITTER);
+  return [
+    { start: 0, gain: 0.2, zzfx: { frequency: 3500, shape: SHAPE_NOISE, attack: 0.002, release: 0.07, filter: 1800 } },
+    { start: 0.05, gain: 0.3, zzfx: { frequency: root, shape: SHAPE_SINE, attack: 0.002, release: 0.22 } },
+    { start: 0.12, gain: 0.3, zzfx: { frequency: root * 1.5, shape: SHAPE_SINE, attack: 0.002, release: 0.4 } },
+  ];
+}
+
 /** A giant letter landing: a deep, short thump with a soft knock on top. `soft` is the refusal wobble. */
 export function letterThump(soft: boolean, random: Random = Math.random): Layer[] {
   const level = soft ? 0.45 : 1;

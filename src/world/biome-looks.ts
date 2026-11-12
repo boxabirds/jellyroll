@@ -4,7 +4,7 @@
  * joined only by the biome's index.
  */
 import * as THREE from 'three/webgpu';
-import { BIOME_COUNT, BIOME_LENGTH, BIOME_ORDER, CAVE, DUNES, ICE, LAVA, MEADOW, SCREE, biomeBlend, biomeOfStretch, biomeStretch, positionOfBiome } from '../game/biomes.ts';
+import { BIOME_COUNT, BIOME_LENGTH, CAVE, DUNES, ICE, LAVA, MEADOW, SCREE, biomeBlend, biomeOfStretch, biomeStretch, caveStartBefore } from '../game/biomes.ts';
 import { caveStart } from '../game/cave.ts';
 
 // --- Ground -------------------------------------------------------------------
@@ -170,12 +170,12 @@ export function atmosphereAt(s: number, out: Atmosphere): Atmosphere {
   if (from === ATMOSPHERES[CAVE] || to === ATMOSPHERES[CAVE]) {
     // The cave this is nearest: the one ahead (or that it is in), unless the one just left is closer.
     let start = caveStart(s);
-    const lap = BIOME_COUNT * BIOME_LENGTH;
-    if (s < start && s - (start - lap + BIOME_LENGTH) < start - s && start >= lap) start -= lap;
+    const before = caveStartBefore(s);
+    if (s < start && s - (before + BIOME_LENGTH) < start - s) start = before;
     const end = start + BIOME_LENGTH;
     const depth = Math.min(s - start, end - s);
-    const position = positionOfBiome(CAVE);
-    const outside = ATMOSPHERES[s < (start + end) / 2 ? BIOME_ORDER[(position + BIOME_COUNT - 1) % BIOME_COUNT] : BIOME_ORDER[(position + 1) % BIOME_COUNT]];
+    const stretch = Math.round(start / BIOME_LENGTH);
+    const outside = ATMOSPHERES[s < (start + end) / 2 ? biomeOfStretch(stretch - 1) : biomeOfStretch(stretch + 1)];
     from = outside; to = ATMOSPHERES[CAVE];
     const k = Math.min(1, Math.max(0, depth / CAVE_DARK_WITHIN));
     t = k * k * (3 - 2 * k);

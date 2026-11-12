@@ -25,8 +25,13 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <span><kbd>W</kbd> faster</span><span><kbd>S</kbd> slower</span>
     <span><kbd>A</kbd> left</span><span><kbd>D</kbd> right</span>
     <span><kbd class="wide">space</kbd> jump</span>
-    <span class="separator"></span><span><kbd>R</kbd> restart</span><span><kbd>M</kbd> mute</span><span><kbd>?</kbd> hide</span>
+    <span class="separator"></span><span><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> use power-up</span><span><kbd>R</kbd> restart</span><span><kbd>M</kbd> mute</span><span><kbd>?</kbd> hide</span>
   </footer>
+  <div id="powerups" class="powerups" aria-label="Power-ups you are carrying">
+    <button class="slot" data-slot="0" type="button" title="Magnet (1)" aria-label="Magnet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h6v10a2 2 0 0 0 4 0V3h6v10a8 8 0 0 1-16 0z" fill="#e8323c"/><rect x="4" y="3" width="6" height="5" fill="#f4f4f4"/><rect x="14" y="3" width="6" height="5" fill="#f4f4f4"/></svg><b>0</b><kbd>1</kbd></button>
+    <button class="slot" data-slot="1" type="button" title="Glass marble (2)" aria-label="Glass marble"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="#cfeaff" stroke="#8fb8d8" stroke-width="1.5"/><path d="M5 11c3-5 11-5 14 0" fill="none" stroke="#ff4d6d" stroke-width="2.2"/><path d="M6 15c4 4 9 3 12-1" fill="none" stroke="#3a8bff" stroke-width="2.2"/><circle cx="8.5" cy="8" r="2" fill="#fff" opacity=".8"/></svg><b>0</b><kbd>2</kbd></button>
+    <button class="slot" data-slot="2" type="button" title="Seeds (3)" aria-label="Seeds"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="8.500" cy="13" rx="5" ry="8" transform="rotate(-22 8.500 13)" fill="#8a5a2b"/><path d="M6 8c-1.500 3-1.500 7 .5 10" fill="none" stroke="#d9ad70" stroke-width="1.600" stroke-linecap="round"/><ellipse cx="16" cy="11" rx="4.600" ry="7.500" transform="rotate(24 16 11)" fill="#62c934"/><path d="M17.500 6.500c1.500 3 1.500 6.500-.5 9" fill="none" stroke="#c4f59a" stroke-width="1.500" stroke-linecap="round"/></svg><b>0</b><kbd>3</kbd></button>
+  </div>
   <button id="scores-button" class="scores-button" type="button" aria-label="Top rolls">Top rolls <kbd>T</kbd></button>
   <section id="worn-out" role="status" aria-live="polite"><div class="worn-card"><h2>Worn away.</h2><p>Score <b id="final-distance">0 m</b> · air time <b id="final-air">0.0 s</b></p><p>Merge with more mushrooms to roll further.</p><p id="score-note" class="score-note"></p><p class="keys-only"><kbd class="wide">space</kbd> or <kbd>R</kbd> to roll again</p><p class="touch-only">Tap the jump button to roll again</p></div></section>
   <section id="loading" role="status" aria-live="polite"><div class="loading-card"><div class="jelly-mark"></div><h2>Nearly rolling.</h2><p id="load-message">Loading the game</p><pre id="fatal" hidden></pre><button id="retry" hidden>Try again</button></div></section>

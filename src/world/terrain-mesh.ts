@@ -6,7 +6,7 @@
 import * as THREE from 'three/webgpu';
 import { attribute, float, mx_noise_float, transformNormalToView, mix, normalMap, positionWorld, sin, smoothstep as smoothstepNode, texture, time, vec2, vec3 } from 'three/tsl';
 import type Node from 'three/src/nodes/core/Node.js';
-import { BIOME_COUNT, BIOME_LENGTH, BIOME_ORDER, BIOME_TRANSITION, CAVE, biomeOfStretch, biomeStretch, caveAt } from '../game/biomes.ts';
+import { BIOME_COUNT, BIOME_LENGTH, BIOME_TRANSITION, CAVE, biomeOfStretch, biomeStretch, caveAt, loopStart } from '../game/biomes.ts';
 import { createMushroom, mushroomCellIndex, mushroomInCell } from '../game/mushrooms.ts';
 import { createHoleDisc, holeCellIndex, holeInCell } from '../game/hazards.ts';
 import { sweetColor } from '../render/colors.ts';
@@ -249,7 +249,7 @@ export class TerrainMesh {
   readonly group = new THREE.Group();
   private readonly chunks: Chunk[] = [];
   /** One material per stretch of the biome sequence: biome i turning into biome i + 1. */
-  private readonly materials: THREE.MeshPhysicalNodeMaterial[];
+  private readonly materials = new Map<string, THREE.MeshPhysicalNodeMaterial>();
   private readonly indexAttribute: THREE.BufferAttribute;
   private readonly rock = createRock();
   private readonly ore = createMushroom();
@@ -266,8 +266,12 @@ export class TerrainMesh {
   private readonly shadowDirectionZ: number;
 
   constructor(textures: readonly GroundTextures[], lighting: GroundLighting, toLight: THREE.Vector3) {
-    // One per place in the course order: the biome there turning into the next one.
-    this.materials = Array.from({ length: BIOME_COUNT }, (_, position) => createGroundMaterial(BIOME_ORDER[position], BIOME_ORDER[(position + 1) % BIOME_COUNT], textures, lighting));
+    // One for each way a biome turns into the next that the course has: inside a loop, and from the end of one loop to the start of the next.
+    const last = loopStart(BIOME_COUNT + 2);
+    for (let stretch = 0; stretch < last; stretch++) {
+      const key = `${biomeOfStretch(stretch)}:${biomeOfStretch(stretch + 1)}`;
+      if (!this.materials.has(key)) this.materials.set(key, createGroundMaterial(biomeOfStretch(stretch), biomeOfStretch(stretch + 1), textures, lighting));
+    }
     // Shadows fall on the far side of a rock from the light.
     const horizontal = Math.hypot(toLight.x, toLight.z) || 1;
     this.shadowDirectionX = -toLight.x / horizontal;
@@ -311,7 +315,7 @@ export class TerrainMesh {
    * Call the returned function once compilation is done.
    */
   warmMaterials() {
-    const extras = this.materials.map(material => {
+    const extras = [...this.materials.values()].map(material => {
       const mesh = new THREE.Mesh(this.chunks[0].mesh.geometry, material);
       mesh.frustumCulled = false;
       this.group.add(mesh);
@@ -362,7 +366,7 @@ export class TerrainMesh {
 
   dispose() {
     for (const chunk of this.chunks) chunk.mesh.geometry.dispose();
-    for (const material of this.materials) material.dispose();
+    for (const material of this.materials.values()) material.dispose();
   }
 
   private createChunk(uvs: THREE.BufferAttribute): Chunk {
@@ -380,7 +384,7 @@ export class TerrainMesh {
     geometry.setAttribute('glow', new THREE.BufferAttribute(glows, 3));
     geometry.setAttribute('uv', uvs);
     geometry.setIndex(this.indexAttribute);
-    const mesh = new THREE.Mesh(geometry, this.materials[0]);
+    const mesh = new THREE.Mesh(geometry, this.materials.values().next().value!);
     // Chunks are rewritten in place and always near the camera; a stale
     // bounding sphere would cull the ground out from under the jelly.
     mesh.frustumCulled = false;
@@ -396,7 +400,7 @@ export class TerrainMesh {
     // the end of that stretch are simply fully the next biome.
     const stretch = biomeStretch(startS);
     chunk.index = UNASSIGNED;
-    chunk.mesh.material = this.materials[stretch % BIOME_COUNT];
+    chunk.mesh.material = this.materials.get(`${biomeOfStretch(stretch)}:${biomeOfStretch(stretch + 1)}`)!;
     collectHoles(this.basins, startS, startS + CHUNK_LENGTH);
     // The ground changes from one biome's to the next across their boundary, except at the cave: there it has finished
     // changing by the mouth on the way in, and does not start until the mouth on the way out, so all the ground under the

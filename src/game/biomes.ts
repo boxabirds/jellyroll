@@ -76,13 +76,55 @@ export function biomeBlend(s: number, stretch = biomeStretch(s)): number {
   return smoothstep(boundary - HALF_TRANSITION, boundary + HALF_TRANSITION, s);
 }
 
-/** Index into BIOMES of a stretch's starting biome. */
-export function biomeOfStretch(stretch: number): number {
-  return BIOME_ORDER[stretch % BIOME_COUNT];
+/**
+ * The course is a series of loops through the biomes in BIOME_ORDER, and each loop goes one biome further than the one before:
+ * the first is Meadow, Scree; the second Meadow, Scree, Ice; and so on, until a loop has all of them (from then on every loop does).
+ * Biomes are discovered a few at a time rather than all at once.
+ */
+export function biomesInLoop(loop: number): number {
+  return Math.min(loop + 2, BIOME_COUNT);
 }
 
-/** How many times the whole sequence has been completed by the time stretch `stretch` starts. */
+/** The stretch each loop starts at, for the loops up to the first with every biome (and one more, to mark where the regular ones begin). */
+const LOOP_STARTS: number[] = [0];
+for (let loop = 0; loop <= BIOME_COUNT; loop++) LOOP_STARTS.push(LOOP_STARTS[loop] + biomesInLoop(loop));
+const LAST_START = LOOP_STARTS.length - 1;
+
+/** The stretch loop `loop` (counting from 0) starts at. */
+export function loopStart(loop: number): number {
+  return loop < LOOP_STARTS.length ? LOOP_STARTS[loop] : LOOP_STARTS[LAST_START] + BIOME_COUNT * (loop - LAST_START);
+}
+
+/** Which loop stretch `stretch` is in, counting from 0. */
 export function loopOfStretch(stretch: number): number {
+  if (stretch >= LOOP_STARTS[LAST_START]) return LAST_START + Math.floor((stretch - LOOP_STARTS[LAST_START]) / BIOME_COUNT);
+  let loop = 0;
+  while (LOOP_STARTS[loop + 1] <= stretch) loop++;
+  return loop;
+}
+
+/** Index into BIOMES of a stretch's starting biome. */
+export function biomeOfStretch(stretch: number): number {
+  return BIOME_ORDER[stretch - loopStart(loopOfStretch(stretch))];
+}
+
+/** The first stretch at or after `from` that is biome `kind`. */
+export function nextStretchOf(kind: number, from: number): number {
+  let stretch = Math.max(0, from);
+  while (biomeOfStretch(stretch) !== kind) stretch++;
+  return stretch;
+}
+
+/** The stretch where biome `kind` is first met (a biome is not in every loop: the first loops are shorter). */
+export function firstStretchOf(kind: number): number {
+  return nextStretchOf(kind, 0);
+}
+
+/**
+ * How many six-biome rounds of distance have gone by when stretch `stretch` starts: what the wear and the speed grow with, so the
+ * difficulty climbs with how far the jelly has come, whatever biomes the loops hold.
+ */
+export function roundOfStretch(stretch: number): number {
   return Math.floor(stretch / BIOME_COUNT);
 }
 
@@ -102,8 +144,13 @@ export function caveAt(s: number): number {
 
 /** Course distance at which the cave nearest ahead of `s` (or the one it is in) begins. It is BIOME_LENGTH long. */
 export function caveStart(s: number): number {
-  const lap = BIOME_COUNT * BIOME_LENGTH, offset = positionOfBiome(CAVE) * BIOME_LENGTH;
-  return Math.max(0, Math.floor((s - offset - BIOME_LENGTH) / lap) + 1) * lap + offset;
+  return nextStretchOf(CAVE, Math.floor(s / BIOME_LENGTH)) * BIOME_LENGTH;
+}
+
+/** Course distance at which the last cave that began before `s` begins, or -Infinity before the first. */
+export function caveStartBefore(s: number): number {
+  for (let stretch = Math.floor(s / BIOME_LENGTH) - 1; stretch >= 0; stretch--) if (biomeOfStretch(stretch) === CAVE) return stretch * BIOME_LENGTH;
+  return Number.NEGATIVE_INFINITY;
 }
 
 /** How far inside the cave `s` is, measured from the nearer mouth (metres); 0 or less outside it. */
@@ -139,18 +186,18 @@ export const widthScale = (s: number) => blended(s, pickWidth);
 export const rockScale = (s: number) => blended(s, pickRocks);
 export const collectibleScale = (s: number) => blended(s, pickCollectibles);
 
-/** Wear multiplier at `s`, including the extra for each completed loop of the sequence. */
+/** Wear multiplier at `s`, including the extra for each six biomes' worth of distance already covered. */
 export function wearScale(s: number): number {
   const stretch = biomeStretch(s);
-  const of = (index: number) => BIOMES[biomeOfStretch(index)].wear * (1 + LOOP_WEAR_GAIN * loopOfStretch(index));
+  const of = (index: number) => BIOMES[biomeOfStretch(index)].wear * (1 + LOOP_WEAR_GAIN * roundOfStretch(index));
   const from = of(stretch), to = of(stretch + 1);
   return from + (to - from) * biomeBlend(s, stretch);
 }
 
-/** Factor on the minimum and default (coasting) speeds at `s`: 1 in the first loop, then +LOOP_SPEED_GAIN per loop, blended across transitions. */
+/** Factor on the minimum and default (coasting) speeds at `s`: 1 at first, then +LOOP_SPEED_GAIN for each six biomes' worth of distance, blended across transitions. */
 export function speedScale(s: number): number {
   const stretch = biomeStretch(s);
-  const of = (index: number) => (1 + LOOP_SPEED_GAIN) ** loopOfStretch(index);
+  const of = (index: number) => (1 + LOOP_SPEED_GAIN) ** roundOfStretch(index);
   const from = of(stretch), to = of(stretch + 1);
   return from + (to - from) * biomeBlend(s, stretch);
 }

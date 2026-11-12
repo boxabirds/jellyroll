@@ -35,7 +35,11 @@ import {
   STALAGMITE_POST_HEIGHT,
   STALAGMITE_POST_RADIUS,
   STALAGMITE_RESTITUTION,
-  STALAGMITE_TOPPLE_KEEP,
+  POWERUP_GLASS,
+  POWERUP_MAGNET,
+  POWERUP_SEEDS,
+  POWERUP_SLOTS,
+  STOCK_MAX,
   SPIKE_CELL,
   GLASS_PICKUP_RADIUS,
   MAX_BROKEN_PER_STEP,
@@ -52,6 +56,7 @@ import {
   TUCK_RISE_RATE,
   GRAVITY,
   GROUND_CONTACT_SLOP,
+  GLASS_WEIGHT,
   GROUND_RESTITUTION,
   HAZARD_EFFECTS,
   HAZARD_HARDER_GAIN,
@@ -156,6 +161,10 @@ export type Ball = {
   magnetSeconds: number;
   /** True on the step a magnet was picked up. */
   magnetPicked: boolean;
+  /** Slots whose key was pressed since the last step: used at the start of the next, so what they do is seen and heard in that step. */
+  wanted: number[];
+  /** Power-ups carried, by slot (POWERUP_MAGNET, POWERUP_GLASS, POWERUP_SEEDS); the number keys use them. */
+  stock: number[];
   /** Stretch of the course whose magnet was last picked up, so it is not there twice. */
   magnetTakenSegment: number;
   /** Seconds of glass marble left; 0 when the jelly is jelly. While it lasts, nothing wears or melts the jelly. */
@@ -193,6 +202,8 @@ export type Ball = {
   lost: number;
   /** True on the step a seed packet was picked up, and the stretch whose packet was last taken. */
   seedsSprayed: boolean;
+  /** Set for one step when a seed packet is picked up (for its sound). */
+  packetFound: boolean;
   seedTakenSegment: number;
   /** Seeds in flight and the collectibles they have become. */
   seeds: SeedField;
@@ -236,7 +247,7 @@ export function createBall(): Ball {
     airTime: NEVER, jumpQueued: NEVER, jumpHeld: false, tuck: 0,
     snow: 0, clock: 0, hazardLevel: Number.NaN, hazardDepth: 0, hazardKind: 0, stabs: 0, vented: false, stabMetres: 0, venting: false,
     pickups: Array.from({ length: MAX_PICKUPS_PER_STEP }, () => ({ dx: 0, dy: 1, dz: 0, distance: 0, jellyRadius: 0, volume: 0, radius: 0, kind: 0, look: 0, color: 0, color2: 0, seed: 0 })),
-    pickupCount: 0, merges: 0, magnetSeconds: 0, magnetPicked: false, magnetTakenSegment: NO_SEGMENT,
+    pickupCount: 0, merges: 0, magnetSeconds: 0, magnetPicked: false, stock: Array.from({ length: POWERUP_SLOTS }, () => 0), wanted: [], magnetTakenSegment: NO_SEGMENT,
     glassSeconds: 0, glassPicked: false, glassTakenSegment: NO_SEGMENT,
     shieldCounts: createShieldCounts(), shieldLevels: createShieldCounts(), shieldUp: -1,
     brokenRocks: createRockLedger(), broken: Array.from({ length: MAX_BROKEN_PER_STEP }, () => ({ x: 0, y: 0, z: 0, radius: 0, look: 0 })), brokenCount: 0,
@@ -245,7 +256,7 @@ export function createBall(): Ball {
     landed: Array.from({ length: MAX_SPIKE_EVENTS }, createSpikeEvent), landedCount: 0, spikeHit: false,
     fallers: Array.from({ length: MAX_FALLERS }, () => ({ active: false, x: 0, z: 0, ground: 0, tip: 0, vy: 0, radius: 0, length: 0, look: 0 })), spikeScan: 0,
     flock: createFlock(), beePicked: false, beeTakenSegment: NO_SEGMENT, lost: 0,
-    seedsSprayed: false, seedTakenSegment: NO_SEGMENT, seeds: createSeedField(),
+    seedsSprayed: false, packetFound: false, seedTakenSegment: NO_SEGMENT, seeds: createSeedField(),
     ledger: createMushroomLedger(),
   };
   resetBall(ball);
@@ -267,7 +278,7 @@ export function resetBall(ball: Ball): void {
   ball.airTime = NEVER; ball.jumpQueued = NEVER; ball.jumpHeld = false; ball.tuck = 0;
   ball.snow = 0; ball.clock = 0; ball.hazardLevel = Number.NaN; ball.hazardDepth = 0; ball.hazardKind = 0; ball.stabs = 0; ball.vented = false; ball.stabMetres = 0; ball.venting = false;
   ball.pickupCount = 0; ball.merges = 0;
-  ball.magnetSeconds = 0; ball.magnetPicked = false; ball.magnetTakenSegment = NO_SEGMENT;
+  ball.magnetSeconds = 0; ball.magnetPicked = false; ball.magnetTakenSegment = NO_SEGMENT; ball.stock.fill(0); ball.wanted.length = 0;
   ball.seedsSprayed = false; ball.seedTakenSegment = NO_SEGMENT; clearSeeds(ball.seeds);
   ball.glassSeconds = 0; ball.glassPicked = false; ball.glassTakenSegment = NO_SEGMENT;
   ball.shieldCounts.fill(0); ball.shieldLevels.fill(0); ball.shieldUp = -1;
@@ -292,11 +303,14 @@ export function stepBall(ball: Ball, input: ControlInput, dt: number): void {
   ball.vented = false;
   ball.magnetPicked = false;
   ball.seedsSprayed = false;
+  ball.packetFound = false;
   ball.glassPicked = false;
   ball.brokenCount = 0;
   ball.toppledCount = 0; ball.landedCount = 0; ball.cracked = 0; ball.spikeHit = false;
   ball.beePicked = false;
   ball.shieldUp = -1;
+  // A key pressed between steps takes effect here, after the event flags were cleared, so the sound and the messages see it.
+  while (ball.wanted.length > 0) usePowerup(ball, ball.wanted.shift()!);
   if (ball.wornOut) return;
   advanceSeeds(ball.seeds, dt, ball.z);
   // At speed, one step could carry the jelly clean through a mushroom or a rock. The step is cut into pieces short enough that
@@ -365,7 +379,8 @@ function advance(ball: Ball, input: ControlInput, dt: number): void {
   const drag = DRAG + (TUCKED_DRAG - DRAG) * ball.tuck;
   const dragScale = (drag / (speedFactor * speedFactor)) * ballSpeed(ball);
   ball.vx += (ax - ball.vx * dragScale) * dt;
-  ball.vy += (-GRAVITY - ball.vy * dragScale) * dt;
+  const weight = ball.glassSeconds > 0 && !ball.grounded ? GLASS_WEIGHT : 1;
+  ball.vy += (-GRAVITY * weight - ball.vy * dragScale) * dt;
   ball.vz += (az - ball.vz * dragScale) * dt;
   // Drag levels W off at the top speed on an average slope; on steep ground
   // gravity would carry the jelly past it, so the limit is also enforced
@@ -384,6 +399,7 @@ function advance(ball: Ball, input: ControlInput, dt: number): void {
   collideWithGround(ball);
   collideWithRocks(ball, dt);
   collideWithStalagmites(ball, dt);
+  smashStalactites(ball);
   jump(ball, input.jump === true, dt);
   collectMagnet(ball, dt);
   collectSeedPacket(ball);
@@ -458,7 +474,9 @@ function collideWithGround(ball: Ball): void {
   const into = ball.vx * normal.x + ball.vy * normal.y + ball.vz * normal.z;
   if (into >= 0) return;
   const impact = -into;
-  const restitution = impact > BOUNCE_MIN_IMPACT ? GROUND_RESTITUTION : 0;
+  // A heavier marble bounces less: it absorbs the harder landings outright, and gives back a smaller share of the rest.
+  const heavy = ball.glassSeconds > 0 ? GLASS_WEIGHT : 1;
+  const restitution = impact > BOUNCE_MIN_IMPACT * heavy ? GROUND_RESTITUTION / heavy : 0;
   const remove = into * (1 + restitution);
   ball.vx -= normal.x * remove;
   ball.vy -= normal.y * remove;
@@ -664,7 +682,8 @@ function collectMagnet(ball: Ball, dt: number): void {
   const dx = magnet.x - ball.x, dy = magnet.y - ball.y, dz = magnet.z - ball.z;
   if (dx * dx + dy * dy + dz * dz >= reach * reach) return;
   ball.magnetTakenSegment = segment;
-  grantMagnet(ball);
+  stockUp(ball, POWERUP_MAGNET);
+  ball.magnetPicked = true;
 }
 
 /**
@@ -684,7 +703,8 @@ function collectSeedPacket(ball: Ball): void {
   const dx = seedPacket.x - ball.x, dy = seedPacket.y - ball.y, dz = seedPacket.z - ball.z;
   if (dx * dx + dy * dy + dz * dz >= reach * reach) return;
   ball.seedTakenSegment = segment;
-  spraySeeds(ball, segment);
+  stockUp(ball, POWERUP_SEEDS);
+  ball.packetFound = true;
 }
 
 /** Record a merge: fill the next pickup, grow the jelly, and count it. */
@@ -781,7 +801,28 @@ function collectGlass(ball: Ball, dt: number): void {
   const dx = glassSpot.x - ball.x, dy = glassSpot.y - ball.y, dz = glassSpot.z - ball.z;
   if (dx * dx + dy * dy + dz * dz >= reach * reach) return;
   ball.glassTakenSegment = segment;
-  grantGlass(ball);
+  stockUp(ball, POWERUP_GLASS);
+  ball.glassPicked = true;
+}
+
+/** Keep a found power-up in its slot. */
+function stockUp(ball: Ball, slot: number): void {
+  ball.stock[slot] = Math.min(STOCK_MAX, ball.stock[slot] + 1);
+}
+
+/** A number key was pressed: use that slot's power-up at the start of the next step. */
+export function wantPowerup(ball: Ball, slot: number): void {
+  if (ball.wanted.length < POWERUP_SLOTS * 2) ball.wanted.push(slot);
+}
+
+/** Use a kept power-up (the number keys): one is taken from its slot and it takes effect now. False when there is none. */
+export function usePowerup(ball: Ball, slot: number): boolean {
+  if (ball.wornOut || slot < 0 || slot >= POWERUP_SLOTS || ball.stock[slot] <= 0) return false;
+  ball.stock[slot]--;
+  if (slot === POWERUP_MAGNET) grantMagnet(ball);
+  else if (slot === POWERUP_GLASS) grantGlass(ball);
+  else spraySeeds(ball, seedPacketSegment(-ball.z));
+  return true;
 }
 
 /** A bee, if one is floating here and the flock has room. It joins the flock where it was found. */
@@ -816,7 +857,7 @@ onHazardsChanged(() => { nearCellX = Number.NaN; });
 
 /**
  * Stalagmites are posts: the jelly bounces off them sideways (and, when it is barely moving, is slid round them like a
- * rock). A glass marble knocks them over instead and rolls on.
+ * rock). A glass marble knocks them over without being affected at all, and rolls on.
  */
 function collideWithStalagmites(ball: Ball, dt: number): void {
   if (caveAt(-ball.z) === 0) return;
@@ -851,8 +892,8 @@ function collideWithStalagmites(ball: Ball, dt: number): void {
         const speed = Math.hypot(ball.vx, ball.vz) || 1;
         event.x = spike.x; event.y = spike.y; event.z = spike.z; event.radius = spike.radius; event.length = spike.length; event.look = spike.look;
         event.dirX = ball.vx / speed; event.dirZ = ball.vz / speed;
+        // The marble is not slowed or knocked about by them: they just go over.
         if (-into > ball.rockImpact) ball.rockImpact = -into;
-        ball.vx *= STALAGMITE_TOPPLE_KEEP; ball.vz *= STALAGMITE_TOPPLE_KEEP;
         continue;
       }
       ball.x += px * (reach - distance); ball.z += pz * (reach - distance);
@@ -870,6 +911,29 @@ function collideWithStalagmites(ball: Ball, dt: number): void {
       const remove = into * (1 + STALAGMITE_RESTITUTION);
       ball.vx -= px * remove; ball.vz -= pz * remove;
       if (-into > ball.rockImpact) ball.rockImpact = -into;
+    }
+  }
+}
+
+/**
+ * A glass marble smashes any stalactite it touches, hanging or falling, and is not hurt: the stalactite goes to pieces where it
+ * was touched and is gone from the roof.
+ */
+function smashStalactites(ball: Ball): void {
+  if (ball.glassSeconds <= 0 || caveAt(-ball.z) === 0) return;
+  const cellX = spikeCellIndex(ball.x), cellZ = spikeCellIndex(ball.z);
+  for (let dz = -SPIKE_NEIGHBOURS; dz <= SPIKE_NEIGHBOURS; dz++) {
+    for (let dx = -SPIKE_NEIGHBOURS; dx <= SPIKE_NEIGHBOURS; dx++) {
+      if (!stalactiteInCell(cellX + dx, cellZ + dz, spike) || isRockBroken(ball.fallenSpikes, cellX + dx, cellZ + dz)) continue;
+      const tip = spike.y + spike.tip;
+      if (ball.y + ball.radius <= tip || ball.y - ball.radius >= tip + spike.length) continue;
+      const ox = spike.x - ball.x, oz = spike.z - ball.z, reach = ball.radius + spike.radius * HALF + STALACTITE_HIT_MARGIN;
+      if (ox * ox + oz * oz >= reach * reach || ball.landedCount >= MAX_SPIKE_EVENTS) continue;
+      breakRock(ball.fallenSpikes, cellX + dx, cellZ + dz);
+      const event = ball.landed[ball.landedCount++];
+      event.x = spike.x; event.y = tip; event.z = spike.z; event.radius = spike.radius; event.length = spike.length; event.look = spike.look;
+      event.dirX = 0; event.dirZ = -1;
+      ball.spikeHit = true;
     }
   }
 }

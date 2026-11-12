@@ -1,19 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  BIOME_COUNT, BIOME_LENGTH, BIOME_ORDER, BIOME_TRANSITION, BIOMES, ICE, LAVA, MEADOW, SCREE, positionOfBiome, biomeBlend, biomeStretch, collectibleKind, dominantBiome,
+  BIOME_COUNT, BIOME_LENGTH, BIOME_ORDER, BIOME_TRANSITION, BIOMES, CAVE, DUNES, ICE, LAVA, LOOP_WEAR_GAIN, MEADOW, SCREE, biomesInLoop, firstStretchOf, loopOfStretch, loopStart, biomeBlend, biomeStretch, collectibleKind, dominantBiome,
   hillScale, speedScale, steerScale, wearScale, widthScale,
 } from '../src/game/biomes.ts';
 import { KIND_NAMES, LOOK, mushroomCellIndex, mushroomInCell, createMushroom } from '../src/game/mushrooms.ts';
 import { LOOKS } from '../src/render/jelly-looks.ts';
 import { createMagnet, magnetInSegment, magnetSegment } from '../src/game/magnets.ts';
-import { ballSpeed, createBall, grantMagnet, grow, magnetActive, stepBall, wear, type Ball, type ControlInput } from '../src/game/physics.ts';
+import { ballSpeed, createBall, grantMagnet, grow, magnetActive, stepBall, usePowerup, wear, type Ball, type ControlInput } from '../src/game/physics.ts';
 import { createRock, rockCellIndex, rockInCell } from '../src/game/rocks.ts';
 import { courseCenter, courseHalfWidth, terrainHeight, terrainNormal } from '../src/game/terrain.ts';
 import {
   MUSHROOM_CELL, MUSHROOM_MAX_RADIUS, MUSHROOM_MIN_RADIUS, MAX_RADIUS, MEAN_SLOPE, MIN_RADIUS, MIN_SPEED, PHYSICS_HZ, PHYSICS_STEP,
   RIDGE_DISTANCE, ROCK_CELL, START_RADIUS, KMH_PER_MS, MAX_SPEED, CRUISE_SPEED, GRAVITY, BOOST_ACCEL, NUDGE_ACCEL, ROLLER_WAVELENGTH, KNOLL_WAVELENGTH, MAGNET_RADIUS, MAGNET_SECONDS, MAGNET_SPACING,
-  MAGNET_FLOAT_HEIGHT, MUSHROOM_TOUCH,
+  MAGNET_FLOAT_HEIGHT, MUSHROOM_TOUCH, POWERUP_MAGNET,
 } from '../src/game/tuning.ts';
 import { createWobble, stepWobble } from '../src/game/wobble.ts';
 
@@ -414,7 +414,7 @@ test('magnets are placed deterministically, float above the valley floor, and ap
   assert.ok(found > SEGMENTS / 2 && found < SEGMENTS, `${found} magnets in ${SEGMENTS * MAGNET_SPACING} m`);
 });
 
-test('rolling through a magnet switches it on for ten seconds, once', () => {
+test('rolling through a magnet keeps it; pressing 1 switches it on for ten seconds', () => {
   const magnet = createMagnet();
   let segment = 0;
   while (!magnetInSegment(segment, magnet)) segment++;
@@ -425,6 +425,10 @@ test('rolling through a magnet switches it on for ten seconds, once', () => {
   let picked = 0;
   for (let i = 0; i < PHYSICS_HZ; i++) { stepBall(ball, COAST, PHYSICS_STEP); if (ball.magnetPicked) picked++; }
   assert.equal(picked, 1, 'the magnet should be picked up exactly once');
+  assert.equal(ball.stock[POWERUP_MAGNET], 1);
+  assert.equal(magnetActive(ball), false, 'found, but not on until it is used');
+  assert.equal(usePowerup(ball, POWERUP_MAGNET), true);
+  assert.equal(ball.stock[POWERUP_MAGNET], 0);
   assert.ok(magnetActive(ball));
   assert.ok(ball.magnetSeconds > MAGNET_SECONDS - 1.1 && ball.magnetSeconds <= MAGNET_SECONDS);
   assert.equal(MAGNET_SECONDS, 10);
@@ -483,18 +487,22 @@ test('a magnet makes a run collect far more mushrooms', () => {
   assert.ok(pulled > plain * 3 && pulled > 10, `${pulled} merges with a magnet vs ${plain} without`);
 });
 
-test('the run starts in the meadow, then goes scree, ice, dunes, cave, lava, and each biome is the biome in its place', () => {
+/** The middle of the first stretch that is biome `kind`. */
+const middleOf = (kind: number) => BIOME_LENGTH * (firstStretchOf(kind) + 0.5);
+
+test('the biomes come in order, and each loop goes one biome further: Meadow Scree, then Meadow Scree Ice, and so on until all are found', () => {
   assert.deepEqual(BIOME_ORDER.map(kind => BIOMES[kind].name), ['Meadow', 'Scree', 'Ice', 'Dunes', 'Cave', 'Lava']);
-  assert.equal(dominantBiome(0), MEADOW);
-  assert.equal(dominantBiome(BIOME_LENGTH * 1.5), SCREE);
-  assert.equal(dominantBiome(BIOME_LENGTH * 2.5), ICE);
   assert.equal(BIOME_LENGTH, 1500);
-  for (let position = 0; position < BIOME_COUNT; position++) {
-    const kind = BIOME_ORDER[position];
-    const middle = BIOME_LENGTH * (position + 0.5);
-    assert.equal(dominantBiome(middle), kind);
-    assert.equal(positionOfBiome(kind), position);
-    assert.ok(Math.abs(wearScale(middle) - BIOMES[kind].wear) < 1e-12, `wear in the middle of ${BIOMES[kind].name}`);
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 7].map(biomesInLoop), [2, 3, 4, 5, 6, 6, 6, 6]);
+  const stretches = Array.from({ length: 30 }, (_, stretch) => BIOMES[dominantBiome(BIOME_LENGTH * (stretch + 0.5))].name[0]).join('');
+  const expected = 'MS' + 'MSI' + 'MSID' + 'MSIDC' + 'MSIDCL' + 'MSIDCL' + 'MSIDCL' + 'MSIDCL';
+  assert.equal(stretches, expected.slice(0, 30));
+  // Each biome is first met where the loops first reach it.
+  assert.deepEqual([MEADOW, SCREE, ICE, DUNES, CAVE, LAVA].map(firstStretchOf), [0, 1, 4, 8, 13, 19]);
+  for (const kind of BIOME_ORDER) {
+    assert.equal(dominantBiome(middleOf(kind)), kind);
+    const round = Math.floor(firstStretchOf(kind) / BIOME_COUNT);
+    assert.ok(Math.abs(wearScale(middleOf(kind)) - BIOMES[kind].wear * (1 + LOOP_WEAR_GAIN * round)) < 1e-12, `wear in the middle of ${BIOMES[kind].name}`);
   }
 });
 
@@ -520,14 +528,23 @@ test('biomes change over 400 m, smoothly, with no jump anywhere', () => {
   }
 });
 
-test('after the last biome the sequence repeats, harder', () => {
+test('once every biome is found the loops are the same six, and the course gets harder with distance', () => {
   const lap = BIOME_LENGTH * BIOME_COUNT;
-  for (let position = 0; position < BIOME_COUNT; position++) {
-    const middle = BIOME_LENGTH * (position + 0.5);
-    assert.equal(dominantBiome(middle + lap), BIOME_ORDER[position]);
-    assert.ok(wearScale(middle + lap) > wearScale(middle) * 1.2, `${BIOMES[BIOME_ORDER[position]].name} is no harder second time round`);
+  for (const loop of [0, 1, 2, 3, 4, 5, 9]) {
+    assert.equal(loopOfStretch(loopStart(loop)), loop);
+    assert.equal(loopOfStretch(loopStart(loop + 1) - 1), loop);
   }
-  assert.ok(wearScale(BIOME_LENGTH * (positionOfBiome(LAVA) + 0.5)) > wearScale(BIOME_LENGTH * (positionOfBiome(MEADOW) + 0.5)) * 3);
+  assert.equal(loopStart(5) + BIOME_COUNT, loopStart(6));
+  for (let position = 0; position < BIOME_COUNT; position++) {
+    const middle = BIOME_LENGTH * (loopStart(6) + position + 0.5);
+    assert.equal(dominantBiome(middle), BIOME_ORDER[position]);
+    assert.equal(dominantBiome(middle + lap), BIOME_ORDER[position]);
+    assert.ok(wearScale(middle + lap) > wearScale(middle) * 1.1, `${BIOMES[BIOME_ORDER[position]].name} is no harder the next time round`);
+  }
+  assert.ok(wearScale(middleOf(LAVA)) > wearScale(middleOf(MEADOW)) * 3);
+  // Whichever biomes a loop holds, the wear and speed grow with how far the jelly has come.
+  assert.ok(wearScale(BIOME_LENGTH * 40.5) > wearScale(BIOME_LENGTH * 6.5) || BIOMES[dominantBiome(BIOME_LENGTH * 40.5)].wear < BIOMES[dominantBiome(BIOME_LENGTH * 6.5)].wear);
+  assert.ok(speedScale(BIOME_LENGTH * 18.5) > speedScale(BIOME_LENGTH * 0.5));
 });
 
 test('each biome grows its own kind of thing; only transitions mix two kinds', () => {
@@ -542,9 +559,8 @@ test('each biome grows its own kind of thing; only transitions mix two kinds', (
     }
     return kinds;
   };
-  for (let position = 0; position < BIOME_COUNT; position++) {
-    const kind = BIOME_ORDER[position];
-    assert.deepEqual([...kindsNear(BIOME_LENGTH * (position + 0.5), 400)], [kind], `the middle of ${BIOMES[kind].name} should grow only ${KIND_NAMES[kind]}s`);
+  for (const kind of BIOME_ORDER) {
+    assert.deepEqual([...kindsNear(middleOf(kind), 400)], [kind], `the middle of ${BIOMES[kind].name} should grow only ${KIND_NAMES[kind]}s`);
   }
   assert.deepEqual([...kindsNear(BIOME_LENGTH, 60)].sort(), [MEADOW, SCREE].sort(), 'the meadow-to-scree transition should mix mushrooms and crystals');
   assert.equal(collectibleKind(BIOME_LENGTH - 250, 0.99), MEADOW);
@@ -560,7 +576,7 @@ test('ice is slippery: the same steering moves the jelly less than in the meadow
     };
     return at(1) - at(0);
   };
-  const ice = drift(BIOME_LENGTH * (positionOfBiome(ICE) + 0.5)), meadow = drift(MEADOW_MIDDLE);
+  const ice = drift(BIOME_LENGTH * (firstStretchOf(ICE) + 0.5)), meadow = drift(MEADOW_MIDDLE);
   assert.ok(ice > 0.5 && meadow > 0.5, 'steering right should move right in both');
   assert.ok(ice < meadow * 0.85, `ice ${ice} m vs meadow ${meadow} m`);
 });

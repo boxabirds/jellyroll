@@ -4,11 +4,11 @@
  * input → fixed physics steps → world streaming → pose → reflections → draw.
  */
 import * as THREE from 'three/webgpu';
-import { BIOME_COUNT, BIOME_LENGTH, BIOME_ORDER, BIOMES, biomeStretch, dominantBiome, loopOfStretch, snowAt, wearScale } from '../game/biomes.ts';
+import { BIOME_LENGTH, BIOME_ORDER, BIOMES, biomeStretch, dominantBiome, loopOfStretch, nextStretchOf, snowAt, wearScale } from '../game/biomes.ts';
 import { hazardLevelBias, hazardShape, setHazardLevelBias } from '../game/hazards.ts';
 import { addBee } from '../game/bees.ts';
 import { shieldLevel } from '../game/progression.ts';
-import { ballSpeed, createBall, grantGlass, grantMagnet, grow, resetBall, spraySeeds, stepBall } from '../game/physics.ts';
+import { ballSpeed, createBall, grantGlass, grantMagnet, grow, resetBall, spraySeeds, stepBall, wantPowerup } from '../game/physics.ts';
 import { MagnetItems } from '../world/magnet-items.ts';
 import { SeedPacketItems } from '../world/seed-packet-items.ts';
 import { GlassItems } from '../world/glass-items.ts';
@@ -17,7 +17,7 @@ import { SpikeField } from '../world/spike-field.ts';
 import { CaveShell } from '../world/cave-shell.ts';
 import { BeeItems } from '../world/bee-items.ts';
 import { BeeFlock } from '../world/bee-flock.ts';
-import { GLASS_EASE_SECONDS } from '../game/tuning.ts';
+import { GLASS_EASE_SECONDS, POWERUP_GLASS } from '../game/tuning.ts';
 import { SeedSpray } from '../world/seed-spray.ts';
 import { START_COLOR } from '../render/colors.ts';
 import { MushroomField } from '../world/mushroom-field.ts';
@@ -60,6 +60,7 @@ import { TerrainMesh } from '../world/terrain-mesh.ts';
 import { Hud } from './hud.ts';
 import { Input } from './input.ts';
 import { HighScores } from './high-scores.ts';
+import { Demo } from './demo.ts';
 import { LetterStage } from '../world/jelly-letters/letter-stage.ts';
 
 /** Image-based light strength before the first biome's own setting is applied. */
@@ -190,6 +191,11 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   /** A landed stalactite breaks into pieces as a rock this many times its radius would. */
   const SPIKE_DEBRIS_SIZE = 1.6;
   let seedsExplained = false;
+  const stockSeen = [0, 0, 0];
+  const POWERUP_HINTS = ['Press 1 to switch on the magnet', 'Press 2 to become a glass marble', 'Press 3 to plant seeds'];
+  /** The key hint for each power-up is given only the first time one is found. */
+  const hinted = [false, false, false];
+  const projected = new THREE.Vector3();
   const spray = new SeedSpray();
   const holes = new HazardProps();
   let playSeconds = 0;
@@ -219,6 +225,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   const badges = new Badges();
   const damage = new DamageNumbers();
   // The world table: the run is registered with the score server, and its score is signed with giant letters at the end.
+  const demoMode = ['true', '1'].includes(new URLSearchParams(location.search).get('demo') ?? '');
   const scores = new HighScores(() => ball.distance, letters, rig.camera);
   const scoreNote = document.querySelector<HTMLElement>('#score-note')!;
   scores.onNote = text => { scoreNote.textContent = text; };
@@ -232,6 +239,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   const restart = () => {
     hud.save();
     resetBall(ball);
+    stockSeen.fill(0);
     resetWobble(wobble, ball);
     jelly.reset();
     merges.reset();
@@ -254,13 +262,22 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     rig.snap(ball, origin.z);
     probe.invalidate();
     wasWornOut = false;
-    scores.runStarted();
+    if (!demoMode) scores.runStarted();
   };
   const input = new Input(restart, () => sound.toggleMute(), () => sound.start());
-  scores.onModal = open => { modalOpen = open || scores.open; input.suspend(modalOpen); };
+  scores.onModal = open => {
+    modalOpen = open || scores.open; input.suspend(modalOpen);
+    // The pointer is hidden while playing; the leaderboard and the name screen have buttons, so it comes back for them.
+    document.documentElement.classList.toggle('show-cursor', modalOpen);
+  };
   scores.entry.onThump = soft => sound.thump(soft);
-  input.onTable = () => scores.showTable();
-  document.querySelector<HTMLElement>('#scores-button')!.addEventListener('click', event => { (event.currentTarget as HTMLElement).blur(); scores.showTable(); });
+  // The table is not part of play: it can be looked at once the jelly has worn away (and after signing a score).
+  input.onTable = () => { if (ball.wornOut) scores.showTable(); };
+  input.onUse = slot => { if (!modalOpen) wantPowerup(ball, slot); };
+  for (const chip of document.querySelectorAll<HTMLElement>('#powerups .slot')) {
+    chip.addEventListener('click', () => { chip.blur(); if (!modalOpen) wantPowerup(ball, Number(chip.dataset.slot)); });
+  }
+  document.querySelector<HTMLElement>('#scores-button')!.addEventListener('click', event => { (event.currentTarget as HTMLElement).blur(); if (ball.wornOut) scores.showTable(); });
   /** Where in a biome the debug jump drops the jelly: past the transition, and past the point where holes start. */
   const DEBUG_BIOME_OFFSET = 300;
   const DEBUG_BACK_METRES = 100;
@@ -292,15 +309,17 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
       hud.toast(`Debug: back to ${Math.round(s)} m`);
       redrawWorld();
     } else if ('marble' in command) {
-      grantGlass(ball);
-      hud.toast('Debug: glass marble');
+      ball.stock[POWERUP_GLASS]++;
+      hud.toast('Debug: a glass marble to carry (press 2)');
     } else if ('bee' in command) {
       const added = addBee(ball.flock, ball.x + 1, ball.y + 1, ball.z);
       hud.toast(added ? `Debug: bee added (${ball.flock.count})` : `Debug: the flock is full (${BEE_MAX})`);
     } else if ('biome' in command) {
-      const loop = loopOfStretch(biomeStretch(-ball.z));
-      jumpTo((loop * BIOME_COUNT + command.biome) * BIOME_LENGTH + DEBUG_BIOME_OFFSET, 0, 0);
-      hud.toast(`Debug: ${BIOMES[BIOME_ORDER[command.biome]].name}, loop ${loop + 1}`);
+      // The nearest stretch of that biome from here on (the first time it is met, if it is not in this loop yet).
+      const kind = BIOME_ORDER[command.biome];
+      const stretch = nextStretchOf(kind, biomeStretch(-ball.z));
+      jumpTo(stretch * BIOME_LENGTH + DEBUG_BIOME_OFFSET, 0, 0);
+      hud.toast(`Debug: ${BIOMES[kind].name}, loop ${loopOfStretch(stretch) + 1}`);
       redrawWorld();
     } else {
       setHazardLevelBias(Math.min(MAX_DEBUG_HOLE_LEVEL, Math.max(-MAX_DEBUG_HOLE_LEVEL, hazardLevelBias() + command.holes)));
@@ -308,6 +327,17 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
       hud.toast(`Debug: holes level ${hazardLevelBias() >= 0 ? '+' : ''}${hazardLevelBias()}${maxed ? ' (holes are as big as they get here)' : ''}`);
       redrawWorld();
     }
+  };
+  // ?demo=true: the jelly plays itself through a loop of scenes (demo.ts); the keys are off and the run is not sent anywhere.
+  let demo: Demo | null = null;
+  const startDemo = () => {
+    document.body.classList.add('demo');
+    input.suspend(true);
+    window.addEventListener('pointerdown', () => sound.start());
+    demo = new Demo({
+      ball, control: input.control,
+      begin: (s, lateral) => { restart(); jumpTo(s, lateral, 0); redrawWorld(); },
+    });
   };
   // Touch: a stick, a jump button, and tilt steering from the phone's sensors.
   const tilt = new TiltSensor(text => hud.toast(text));
@@ -433,6 +463,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     // A hidden tab neither simulates nor renders a stale frame.
     if (document.hidden) { accumulator = 0; return; }
     // Once the jelly has worn away, Space starts a new run (as R always does).
+    demo?.update(dt);
     if (modalOpen) input.jumpPressed = false;
     if (ball.wornOut && input.jumpPressed) { restart(); input.jumpPressed = false; }
     if (ball.wornOut && !wasWornOut) scores.runEnded(ball.distance);
@@ -483,6 +514,16 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
       if (ball.shieldUp >= 0) {
         const level = ball.shieldLevels[ball.shieldUp];
         hud.toast(`${BIOMES[ball.shieldUp].name} shield level ${level}: ${Math.round(SHIELD_REDUCTION[level - 1] * 100)}% less wear there`);
+      }
+      // A power-up found goes into its slot, to be used with its key.
+      for (let slot = 0; slot < POWERUP_HINTS.length; slot++) {
+        if (ball.stock[slot] > stockSeen[slot]) {
+          // Its picture flies from the jelly to its chip; the first time ever, say which key uses it.
+          projected.copy(jelly.center).project(rig.camera);
+          hud.flyPowerup(slot, (projected.x + 1) / 2 * innerWidth, (1 - projected.y) / 2 * innerHeight);
+          if (!hinted[slot]) { hinted[slot] = true; hud.toast(POWERUP_HINTS[slot]); }
+        }
+        stockSeen[slot] = ball.stock[slot];
       }
       if (ball.beePicked) hud.toast(`A bee joins you (${ball.flock.count})`);
       if (ball.flock.levelledUp) hud.toast(`Your bees are stronger: they carry ${beeCapacity(ball.flock.delivered)} now`);
@@ -651,7 +692,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   window.addEventListener('pagehide', event => { if (!event.persisted) dispose(); }, { once: true });
   import.meta.hot?.dispose(dispose);
 
-  scores.runStarted();
+  if (demoMode) startDemo(); else scores.runStarted();
   // ?test=leaderboard-entry: skip the playing. A moment after loading the jelly wears away with a small real score, so the game over
   // and (if the local score server says it makes the top ten) the name screen come up at once. The server still checks the run.
   if (new URLSearchParams(location.search).get('test') === 'leaderboard-entry') {

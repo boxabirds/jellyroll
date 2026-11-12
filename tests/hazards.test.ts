@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BIOME_COUNT, BIOME_LENGTH, BIOMES, ICE, dominantBiome, positionOfBiome } from '../src/game/biomes.ts';
+import { BIOME_COUNT, BIOME_LENGTH, BIOMES, ICE, LAVA, dominantBiome, firstStretchOf, nextStretchOf } from '../src/game/biomes.ts';
 import { Stain, NO_STAIN, STAIN_FADE_SECONDS } from '../src/game/stain.ts';
 import { holeLevel } from '../src/game/terrain.ts';
 import { createHazardSample, hazardAt, hazardReach, hazardShape, isLiquidKind, laneCentre, laneHalfWidth, setHazardLevelBias } from '../src/game/hazards.ts';
@@ -67,7 +67,8 @@ test('holes grow with every biome: more of the ground is hole, loop after loop, 
 
 test('every hole is the kind of its biome', () => {
   const seen = new Set<number>();
-  for (let s = HAZARD_FREE_UNTIL; s < 2 * BIOME_COUNT * BIOME_LENGTH; s += 1.5) {
+  // Far enough to take in every biome (the cave and the lava are not met until the later loops).
+  for (let s = HAZARD_FREE_UNTIL; s < (firstStretchOf(LAVA) + 1) * BIOME_LENGTH; s += 1.5) {
     for (let u = -30; u <= 30; u += 1.5) {
       if (depthAt(u, s) > 0.5) {
         seen.add(sample.kind);
@@ -113,7 +114,8 @@ const FLOOR_REACH = 9;
 function findHole(kind: number, loop: number, wetRun = WATER_RUN): [number, number] {
   // A pond has a wide, gentle bank, so less of it is fully wet.
   const run = isLiquidKind(kind) ? wetRun : HOLE_RUN, needed = isLiquidKind(kind) ? WATER_DEPTH : 0.999;
-  const start = loop * BIOME_COUNT * BIOME_LENGTH + positionOfBiome(kind) * BIOME_LENGTH + 300;
+  // The first stretch of that biome from `loop` rounds of six stretches in (so the holes have grown); the lava is not met before the twentieth stretch.
+  const start = nextStretchOf(kind, loop * BIOME_COUNT) * BIOME_LENGTH + 300;
   for (let s = start; s < start + 1200; s += 0.5) {
     for (let u = -FLOOR_REACH; u <= FLOOR_REACH; u += 0.5) {
       let whole = true;
@@ -216,7 +218,8 @@ test('liquids lie flat and are held in: the surface is one height, and ground ri
   let wet = 0, spilled = 0;
   const kinds = new Set<number>();
   const AROUND = 2, DIRECTIONS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-  for (let s = 600; s < 8000; s += 2) {
+  // As far as the first lava, so every liquid is met.
+  for (let s = 600; s < (firstStretchOf(LAVA) + 1) * BIOME_LENGTH; s += 2) {
     for (let u = -9; u <= 9; u += 1) {
       const x = courseCenter(s) + u;
       if (holeEffectAt(x, -s, sample) < 0.5 || !isLiquidKind(sample.kind)) continue;
@@ -274,7 +277,7 @@ test('the jelly is stained by what it touches, and the stain wears off', () => {
 
 // --- Snow ----------------------------------------------------------------------------
 
-const ICE_START = positionOfBiome(ICE) * BIOME_LENGTH + 600;
+const ICE_START = firstStretchOf(ICE) * BIOME_LENGTH + 600;
 
 function rollInSnow(seconds: number, throttle: number, from = ICE_START): Ball {
   const ball = createBall();
@@ -331,8 +334,8 @@ test('snow is scraped off in proportion to how much of the ground under the jell
     return before - ball.snow;
   };
   // Right in the ice: nothing lost to the ground (speed is high). Half way into the next biome: some. Fully out: most.
-  const ICE_MIDDLE = positionOfBiome(ICE) * BIOME_LENGTH + BIOME_LENGTH / 2;
-  const NEXT_BOUNDARY = (positionOfBiome(ICE) + 1) * BIOME_LENGTH;
+  const ICE_MIDDLE = firstStretchOf(ICE) * BIOME_LENGTH + BIOME_LENGTH / 2;
+  const NEXT_BOUNDARY = (firstStretchOf(ICE) + 1) * BIOME_LENGTH;
   const inSnow = lose(ICE_MIDDLE), halfway = lose(NEXT_BOUNDARY), out = lose(NEXT_BOUNDARY + 600);
   assert.ok(inSnow < 0.05, `lost ${inSnow} of the coat in the snow`);
   assert.ok(halfway > inSnow + 0.1, `lost ${halfway} half way out of the snow`);

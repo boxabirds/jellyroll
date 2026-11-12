@@ -11,7 +11,7 @@
  * mesh draws the other half of the blend.
  */
 import * as THREE from 'three/webgpu';
-import { attribute, cos, instancedBufferAttribute, mix, positionGeometry, positionLocal, sin, time, vec3 } from 'three/tsl';
+import { attribute, cos, instancedDynamicBufferAttribute, mix, positionGeometry, positionLocal, sin, time, vec3 } from 'three/tsl';
 import type Node from 'three/src/nodes/core/Node.js';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { BIOME_COUNT, CAVE, DUNES, ICE, LAVA, MEADOW, SCREE } from '../game/biomes.ts';
@@ -235,9 +235,9 @@ class Batch {
   constructor(kind: number) {
     this.kind = kind;
     const look = KINDS[kind];
-    const deepLook = instancedBufferAttribute(this.deepLook, 'vec4');
-    const deep2Seed = instancedBufferAttribute(this.deep2Seed, 'vec4');
-    const tintRadius = instancedBufferAttribute(this.tintRadius, 'vec4');
+    const deepLook = instancedDynamicBufferAttribute(this.deepLook, 'vec4');
+    const deep2Seed = instancedDynamicBufferAttribute(this.deep2Seed, 'vec4');
+    const tintRadius = instancedDynamicBufferAttribute(this.tintRadius, 'vec4');
     const seed = deep2Seed.w as unknown as Node<'float'>;
     // By the time material nodes run, Three has already applied the instance
     // matrix to positionLocal, so the shape's own coordinates come from the
@@ -275,6 +275,10 @@ class Batch {
       material.positionNode = positionLocal.add(fromBase.mul(stretch).mul(tintRadius.w));
     }
     this.mesh = new THREE.InstancedMesh(look.geometry(), material, MAX_PER_KIND);
+    // These buffers are rewritten as the jelly moves on. Marked static (and uploaded only when flagged) they were seen to show a
+    // stale list for a frame, so every collectible changed shape and back: dynamic buffers are sent every frame.
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.deepLook.setUsage(THREE.DynamicDrawUsage); this.deep2Seed.setUsage(THREE.DynamicDrawUsage); this.tintRadius.setUsage(THREE.DynamicDrawUsage);
     this.mesh.count = 0;
     this.mesh.renderOrder = 1;
     // Instances are spread along hundreds of metres; one item's bounds would cull them all.

@@ -7,7 +7,7 @@ import * as THREE from 'three/webgpu';
 import { clamp } from '../game/noise.ts';
 import type { Ball } from '../game/physics.ts';
 import { courseDrift, terrainHeight } from '../game/terrain.ts';
-import { CRUISE_SPEED, HEADING_MIN_SPEED, START_RADIUS } from '../game/tuning.ts';
+import { CRUISE_SPEED, HEADING_MIN_SPEED } from '../game/tuning.ts';
 import { VIEW_DISTANCE } from './terrain-mesh.ts';
 
 const NEAR = 0.3;
@@ -18,15 +18,18 @@ const FAR = VIEW_DISTANCE * 1.5;
  */
 const MIN_HORIZONTAL_FOV = 66;
 const MAX_FOV = 92;
+/**
+ * Speed is shown by the lens, not by the camera's position: the field of view opens from FOV_SLOW to FOV_FAST as the jelly speeds up,
+ * and the camera stays the same distance behind and above it. (Pulling the camera back with speed made a fast jelly look as if it were
+ * going slowly.) The camera does not follow the jelly's size either, so a grown jelly looks bigger and a worn one smaller.
+ */
 const FOV_SLOW = 56;
-const FOV_FAST = 72;
-/** Speed (m/s) at which the camera is fully pulled back and widened. */
+const FOV_FAST = 82;
+/** Speed (m/s) at which the view is fully widened. */
 const FAST_SPEED = CRUISE_SPEED;
-const DISTANCE_SLOW = 4.6;
-const DISTANCE_FAST = 6.6;
-const HEIGHT_SLOW = 1.9;
-const HEIGHT_FAST = 2.9;
-const LOOK_AHEAD = 6;
+const DISTANCE = 5.2;
+const HEIGHT = 3.2;
+const LOOK_AHEAD = 8;
 const LOOK_HEIGHT = 0.9;
 /** Keep the lens this far above the ground under it. */
 const GROUND_CLEARANCE = 1.1;
@@ -36,10 +39,6 @@ const HEADING_RATE = 2.6;
 const POSITION_RATE = 16;
 const HEIGHT_RATE = 4;
 const ZOOM_RATE = 1.6;
-/** The rig scales with the jelly so a grown one still fits the frame. */
-const SCALE_RATE = 2;
-/** ...but it stops closing in on a jelly that is wearing away to a speck. */
-const MIN_SCALE = 0.4;
 /**
  * Smoothing makes the camera trail a fast jelly. It may fall this many times
  * its intended distance behind, no further.
@@ -56,19 +55,17 @@ export class ChaseCamera {
   private x = 0;
   private y = 0;
   private z = 0;
+  /** 0 (slow) to 1 (fast): how far the lens has opened. */
   private zoom = 0;
-  private scale = 1;
   private readonly target = new THREE.Vector3();
 
   /** Jump straight to the resting pose behind the ball. */
   snap(ball: Ball, originZ: number) {
     this.aim(ball, 1);
     this.zoom = 0;
-    this.scale = Math.max(MIN_SCALE, ball.radius / START_RADIUS);
-    const height = HEIGHT_SLOW * this.scale, distance = DISTANCE_SLOW * this.scale;
-    this.x = ball.x - this.headingX * distance;
-    this.z = ball.z - this.headingZ * distance;
-    this.y = Math.max(ball.y + height, terrainHeight(this.x, this.z) + GROUND_CLEARANCE);
+    this.x = ball.x - this.headingX * DISTANCE;
+    this.z = ball.z - this.headingZ * DISTANCE;
+    this.y = Math.max(ball.y + HEIGHT, terrainHeight(this.x, this.z) + GROUND_CLEARANCE);
     this.underRoof();
     this.pose(ball, originZ);
   }
@@ -77,9 +74,7 @@ export class ChaseCamera {
     this.aim(ball, 1 - Math.exp(-HEADING_RATE * dt));
     const speed = Math.hypot(ball.vx, ball.vy, ball.vz);
     this.zoom += (clamp(speed / FAST_SPEED, 0, 1) - this.zoom) * (1 - Math.exp(-ZOOM_RATE * dt));
-    this.scale += (Math.max(MIN_SCALE, ball.radius / START_RADIUS) - this.scale) * (1 - Math.exp(-SCALE_RATE * dt));
-    const distance = (DISTANCE_SLOW + (DISTANCE_FAST - DISTANCE_SLOW) * this.zoom) * this.scale;
-    const height = (HEIGHT_SLOW + (HEIGHT_FAST - HEIGHT_SLOW) * this.zoom) * this.scale;
+    const distance = DISTANCE, height = HEIGHT;
     const follow = 1 - Math.exp(-POSITION_RATE * dt);
     this.x += (ball.x - this.headingX * distance - this.x) * follow;
     this.z += (ball.z - this.headingZ * distance - this.z) * follow;
@@ -130,9 +125,9 @@ export class ChaseCamera {
     if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
     camera.position.set(this.x, this.y, this.z - originZ);
     this.target.set(
-      ball.x + this.headingX * LOOK_AHEAD * this.scale,
-      ball.y + LOOK_HEIGHT * this.scale,
-      ball.z + this.headingZ * LOOK_AHEAD * this.scale - originZ,
+      ball.x + this.headingX * LOOK_AHEAD,
+      ball.y + LOOK_HEIGHT,
+      ball.z + this.headingZ * LOOK_AHEAD - originZ,
     );
     camera.lookAt(this.target);
   }

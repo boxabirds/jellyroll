@@ -24,6 +24,10 @@ function blendedBase(s: number) {
   return from + (to - from) * biomeBlend(s, stretch);
 }
 const PERCENT = 100;
+/** The power-up picture starts this many times its chip size, flies in an arc this many pixels above its path, and takes this long. */
+const FLY_START_SCALE = 2.4;
+const FLY_ARC = 90;
+const FLY_MS = 750;
 const BEST_STORAGE_KEY = 'jellyland.best-distance';
 
 export class Hud {
@@ -50,6 +54,9 @@ export class Hud {
   private bannerSeconds = 0;
   private readonly magnet = document.querySelector<HTMLElement>('#magnet')!;
   private readonly magnetSeconds = document.querySelector<HTMLElement>('#magnet-seconds')!;
+  private readonly slots = [...document.querySelectorAll<HTMLElement>('#powerups .slot')];
+  /** Power-ups on their way to the chips, by slot: found, but not yet counted. */
+  private readonly arriving = [0, 0, 0];
   private readonly wornOut = document.querySelector<HTMLElement>('#worn-out')!;
   private readonly finalDistance = document.querySelector<HTMLElement>('#final-distance')!;
   private bestDistance = readBest();
@@ -86,6 +93,12 @@ export class Hud {
     this.merges.textContent = ball.merges.toString();
     this.snow.textContent = `${Math.round(ball.snow * PERCENT)}%`;
     this.air.textContent = formatSeconds(ball.airSeconds);
+    for (let i = 0; i < this.slots.length; i++) {
+      // A power-up still flying to its chip is not counted until it gets there.
+      const count = Math.max(0, (ball.stock[i] ?? 0) - this.arriving[i]);
+      this.slots[i].classList.toggle('shown', count > 0 || this.arriving[i] > 0);
+      this.slots[i].querySelector('b')!.textContent = String(count);
+    }
     this.magnet.classList.toggle('shown', ball.magnetSeconds > 0);
     this.magnetSeconds.textContent = formatSeconds(ball.magnetSeconds);
     this.wornOut.classList.toggle('shown', ball.wornOut);
@@ -93,6 +106,26 @@ export class Hud {
       this.finalDistance.textContent = formatDistance(distance);
       this.finalAir.textContent = formatSeconds(ball.airSeconds);
     }
+  }
+
+  /**
+   * A power-up was found at screen point (x, y): its picture flies down to its chip, and the count goes up when it arrives.
+   * (With reduced motion it is simply counted.)
+   */
+  flyPowerup(slot: number, x: number, y: number) {
+    const chip = this.slots[slot], icon = chip?.querySelector('svg');
+    if (!chip || !icon || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    this.arriving[slot]++;
+    chip.classList.add('shown');
+    const flying = icon.cloneNode(true) as SVGElement;
+    flying.classList.add('flying');
+    document.body.append(flying);
+    const target = icon.getBoundingClientRect();
+    const size = target.width, start = FLY_START_SCALE;
+    const from = `translate(${x - size / 2}px, ${y - size / 2}px) scale(${start})`;
+    const to = `translate(${target.left}px, ${target.top}px) scale(1)`;
+    const arrive = () => { flying.remove(); this.arriving[slot] = Math.max(0, this.arriving[slot] - 1); chip.classList.remove('landed'); void chip.offsetWidth; chip.classList.add('landed'); };
+    flying.animate([{ transform: from, opacity: 1 }, { transform: `translate(${(x + target.left) / 2}px, ${Math.min(y, target.top) - FLY_ARC}px) scale(${start * 0.8})`, opacity: 1, offset: 0.45 }, { transform: to, opacity: 1 }], { duration: FLY_MS, easing: 'ease-in-out' }).onfinish = arrive;
   }
 
   /** The critically-low warning: the screen edges and the size readout flush red with `level` (0..1). */

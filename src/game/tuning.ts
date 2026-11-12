@@ -437,14 +437,21 @@ export const SHIELD_REDUCTION: readonly number[] = [0.1, 0.3, 0.6];
 export const GLASS_SECONDS = 24;
 /** The marble turns from jelly to glass, and back, over this long (so the look and the sound ease in and out). */
 export const GLASS_EASE_SECONDS = 0.35;
-/** Each biome's stretch of course has a marble to find with this chance: 1 in GLASS_ODDS (at most one). */
-export const GLASS_ODDS = 2;
-export const GLASS_MARGIN = 250;
+/**
+ * Each biome's stretch of course has between GLASS_PER_BIOME_MIN and GLASS_PER_BIOME_MAX marbles to find, spread over
+ * GLASS_SLOTS evenly spaced places (a different two to four of them used in each biome).
+ */
+export const GLASS_PER_BIOME_MIN = 2;
+export const GLASS_PER_BIOME_MAX = 4;
+export const GLASS_SLOTS = 4;
+export const GLASS_MARGIN = 40;
 export const GLASS_LATERAL_FRACTION = 0.3;
 export const GLASS_FLOAT_HEIGHT = 1.6;
 /** No marbles before the second biome: the first stretch is too gentle for one to be worth having. */
-export const GLASS_FREE_UNTIL = 1500;
+export const GLASS_FREE_UNTIL = 0;
 export const GLASS_PICKUP_RADIUS = 1.8;
+/** The marble is this many times heavier than the jelly: in the air it comes down this much harder, and it bounces this much less. (On the ground, where its weight would only make it faster downhill, it is the same.) */
+export const GLASS_WEIGHT = 2;
 
 /** A glass marble smashes a rock it hits and loses this share of its speed doing so. */
 export const GLASS_BREAK_KEEP = 0.9;
@@ -552,3 +559,13 @@ export const STALACTITE_HIT_MARGIN = 0.15;
 export const STALAGMITE_TOPPLE_KEEP = 0.95;
 /** At most this many stalagmites are reported knocked over, and stalactites landed, by one physics step. */
 export const MAX_SPIKE_EVENTS = 4;
+
+/**
+ * Power-ups are kept, not used the moment they are found: the number keys use them. Slot 1 is the magnet, 2 the glass marble,
+ * 3 a seed packet. At most STOCK_MAX of each are carried.
+ */
+export const POWERUP_MAGNET = 0;
+export const POWERUP_GLASS = 1;
+export const POWERUP_SEEDS = 2;
+export const POWERUP_SLOTS = 3;
+export const STOCK_MAX = 9;

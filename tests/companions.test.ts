@@ -7,7 +7,7 @@ import { beeCapacity, beeLevel, shieldFactorAt, shieldLevel, stepProgress } from
 import { pickupInSegment, createSpot } from '../src/game/pickups.ts';
 import { BEE_PICKUP, GLASS_PICKUP } from '../src/game/pickup-kinds.ts';
 import { courseCenter, terrainHeight } from '../src/game/terrain.ts';
-import { PHYSICS_STEP } from '../src/game/tuning.ts';
+import { GLASS_PER_BIOME_MAX, GLASS_PER_BIOME_MIN, GLASS_SLOTS, PHYSICS_STEP } from '../src/game/tuning.ts';
 import { createMushroom, mushroomCellIndex, mushroomInCell } from '../src/game/mushrooms.ts';
 
 const idle = { throttle: 0, steer: 0, jump: false };
@@ -43,7 +43,8 @@ test('a meadow shield cuts meadow wear but not wear elsewhere', () => {
     return before - ball.radius;
   };
   assert.ok(Math.abs(worn(2, 100) / worn(0, 100) - 0.7) < 1e-9);
-  assert.equal(worn(2, BIOME_LENGTH * 2 + 700), worn(0, BIOME_LENGTH * 2 + 700));
+  // The scree comes right after the first meadow, so a meadow shield does nothing there.
+  assert.equal(worn(2, BIOME_LENGTH + 700), worn(0, BIOME_LENGTH + 700));
 });
 
 test('glass takes no wear, and counts down', () => {
@@ -69,12 +70,22 @@ test('hazard damage is tallied for the damage numbers; plain rolling wear is not
   assert.ok(ball.radius < before);
 });
 
-test('glass and bee pickups exist, away from the start, at most one a stretch', () => {
+test('every biome has two to four marbles to find, in a different set of places; bees are at most one a stretch', () => {
   const spot = createSpot();
-  let glass = 0, bees = 0;
-  for (let segment = 0; segment < 60; segment++) if (pickupInSegment(GLASS_PICKUP, segment, spot)) glass++;
+  const BIOMES_CHECKED = 40;
+  const perBiome: number[] = [], places = new Set<string>();
+  for (let biome = 0; biome < BIOMES_CHECKED; biome++) {
+    let count = 0;
+    for (let slot = 0; slot < GLASS_SLOTS; slot++) {
+      if (pickupInSegment(GLASS_PICKUP, biome * GLASS_SLOTS + slot, spot)) { count++; places.add(`${biome % 7}:${slot}`); }
+    }
+    perBiome.push(count);
+  }
+  assert.ok(perBiome.every(count => count >= GLASS_PER_BIOME_MIN && count <= GLASS_PER_BIOME_MAX), `marbles per biome: ${perBiome}`);
+  for (const count of [2, 3, 4]) assert.ok(perBiome.includes(count), `no biome with ${count} marbles in ${perBiome}`);
+  assert.ok(places.size > GLASS_SLOTS, 'the same places are used in every biome');
+  let bees = 0;
   for (let segment = 0; segment < 40; segment++) if (pickupInSegment(BEE_PICKUP, segment, spot)) { bees++; assert.ok(-spot.z >= BEE_PICKUP.freeUntil); }
-  assert.ok(glass >= 18 && glass <= 42, `glass ${glass}`);
   assert.ok(bees > 8 && bees < 32, `bees ${bees}`);
 });
 
@@ -141,4 +152,26 @@ test('a glass marble smashes a rock it hits and rolls on; plain jelly bounces of
   const plain = roll(false);
   assert.equal(plain.smashed, 0);
   assert.equal(isRockBroken(plain.ball.brokenRocks, cellX, cellZ), false);
+});
+
+test('the glass marble is twice as heavy: it comes down harder and bounces much less than the jelly', () => {
+  const drop = (glass: boolean) => {
+    const ball = createBall();
+    ball.x = courseCenter(300); ball.z = -300;
+    ball.y = terrainHeight(ball.x, ball.z) + ball.radius + 6;
+    ball.vx = 0; ball.vy = 0; ball.vz = -6;
+    if (glass) grantGlass(ball);
+    let landedAt = -1, rebound = 0, seconds = 0;
+    for (let i = 0; i < 3 / PHYSICS_STEP; i++) {
+      stepBall(ball, idle, PHYSICS_STEP); seconds += PHYSICS_STEP;
+      if (landedAt < 0 && ball.impact > 0) landedAt = seconds;
+      else if (landedAt >= 0 && seconds - landedAt < 1) rebound = Math.max(rebound, ball.vy);
+    }
+    return { landedAt, rebound };
+  };
+  const jelly = drop(false), marble = drop(true);
+  assert.ok(jelly.landedAt > 0 && marble.landedAt > 0, 'both land');
+  assert.ok(marble.landedAt < jelly.landedAt, `the marble falls faster (${marble.landedAt.toFixed(2)} s vs ${jelly.landedAt.toFixed(2)} s)`);
+  assert.ok(jelly.rebound > 1, `the jelly bounces (${jelly.rebound.toFixed(2)} m/s up)`);
+  assert.ok(marble.rebound < jelly.rebound * 0.6, `the marble bounces much less (${marble.rebound.toFixed(2)} vs ${jelly.rebound.toFixed(2)} m/s up)`);
 });

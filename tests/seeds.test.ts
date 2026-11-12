@@ -7,7 +7,8 @@ import {
   sproutScale,
 } from '../src/game/seeds.ts';
 import { KIND_NAMES } from '../src/game/mushrooms.ts';
-import { createBall, spraySeeds, stepBall } from '../src/game/physics.ts';
+import { createBall, spraySeeds, stepBall, usePowerup, wantPowerup } from '../src/game/physics.ts';
+import { POWERUP_SEEDS } from '../src/game/tuning.ts';
 import { courseCenter, courseHalfWidth, terrainHeight } from '../src/game/terrain.ts';
 import {
   MAX_PLANTED, MUSHROOM_MAX_RADIUS, MUSHROOM_MIN_RADIUS, PHYSICS_STEP, SEED_FAR, SEED_FLIGHT_MIN_SECONDS, SEED_GROW_SECONDS, SEED_NEAR,
@@ -166,10 +167,19 @@ test('rolling through a packet sprays seeds once, and restarting clears them', (
   const ball = createBall();
   ball.x = packet.x; ball.y = packet.y; ball.z = packet.z + 3;
   ball.vx = 0; ball.vy = 0; ball.vz = -10;
-  let sprays = 0;
-  for (let i = 0; i < 120; i++) { stepBall(ball, COAST, PHYSICS_STEP); if (ball.seedsSprayed) sprays++; }
-  assert.equal(sprays, 1, 'the packet should be picked up exactly once');
-  assert.ok(livingSeeds(ball.seeds) >= SEED_COUNT * 0.8, `${livingSeeds(ball.seeds)} seeds in the air`);
+  for (let i = 0; i < 120; i++) stepBall(ball, COAST, PHYSICS_STEP);
+  // Rolling through a packet only keeps it (slot 3); the seeds go out when the player uses it.
+  assert.equal(ball.stock[POWERUP_SEEDS], 1, 'the packet should be picked up exactly once');
+  assert.equal(livingSeeds(ball.seeds), 0, 'nothing is sown until it is used');
   assert.equal(ball.seedTakenSegment, segment);
+  // A key pressed between steps is used at the start of the next, where the sound and the messages can see it.
+  wantPowerup(ball, POWERUP_SEEDS);
+  stepBall(ball, COAST, PHYSICS_STEP);
+  assert.equal(ball.seedsSprayed, true, 'the step that uses it reports it (the sound plays from that)');
+  stepBall(ball, COAST, PHYSICS_STEP);
+  assert.equal(ball.seedsSprayed, false, 'and only that step');
+  assert.ok(livingSeeds(ball.seeds) >= SEED_COUNT * 0.8, `${livingSeeds(ball.seeds)} seeds in the air`);
+  assert.equal(ball.stock[POWERUP_SEEDS], 0);
+  assert.equal(usePowerup(ball, POWERUP_SEEDS), false, 'with none left there is nothing to use');
   assert.ok(START_RADIUS > 0);
 });

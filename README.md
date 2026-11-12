@@ -31,8 +31,10 @@ over 400 m. Each has its own ground, light, terrain and thing to eat, and its ow
 | ![The mouth of the cave](docs/gallery/cave-mouth.jpg) The mouth of the cave | ![Inside the cave](docs/gallery/cave.jpg) Inside the cave |
 | ![Lava](docs/gallery/lava.jpg) Lava | |
 
-After the lava the sequence starts again with every wear rate half as high
-again, and the jelly's minimum and default speeds 20% higher.
+The biomes are found a few at a time. The first stretch of the course is Meadow, Scree; then it
+starts again with one more: Meadow, Scree, Ice; then Meadow, Scree, Ice, Dunes; and so on, until a
+loop has all six, and from then on every loop does. Wear grows by half again, and the jelly's
+minimum and default speeds by 20%, for every six biomes' worth of distance.
 
 ### Holes
 
@@ -63,22 +65,25 @@ there is no sky, and the only light is what glows. The crystals (they used to gr
 now has ore: gold, silver and opal) glow, and each lights the floor round it in its own colour; so do the pools. Stalagmites stand all over the floor and the
 jelly bounces off them like posts. Stalactites hang over it, and about one in five lets go as the jelly comes: it is timed
 to come down where the jelly is heading, cracks as it goes, and takes 7% of the jelly and a good deal of its speed if it
-strikes. A glass marble is not hurt by them, and knocks stalagmites over as it knocks rocks to pieces.
+strikes. A glass marble is not hurt by them: stalagmites do not slow it (it knocks them over as it knocks rocks to pieces) and it smashes any stalactite it touches, hanging or falling.
 
-Two power-ups float above the grass now and then:
+Three power-ups float above the grass now and then. They are **kept, not used at once**: rolling through one puts it
+in its slot (shown as a chip at the bottom of the screen, up to nine of each), and the number key uses it. Tap the chip on a phone.
 
-- **Magnet** (red horseshoe): for ten seconds every collectible within nine
+
+- **Magnet** (red horseshoe, key **1**): for ten seconds every collectible within nine
   metres is pulled in.
-- **Seed packet**: sprays a pile of seeds in arcs down the valley ahead. They
+- **Seed packet** (key **3**): sprays a pile of seeds in arcs down the valley ahead. They
   land and sprout at once into the collectible of the ground they landed on,
   ready to roll through.
 
 Two more floating things turn up now and then:
 
-- **Glass marble** (a clear ball with a twist of colour; none turn up before the
-  second biome, and then one biome in two): for twenty-four seconds the
+- **Glass marble** (a clear ball with a twist of colour, key **2**; two to four in every
+  biome): for twenty-four seconds the
   jelly is a glass marble, polished and rigid, and nothing wears or melts it. It
-  rolls with a recording of stone sliding on stone, louder the faster it goes, and
+  is twice as heavy as the jelly: it comes down harder in the air and bounces much less.
+  It rolls with a recording of stone sliding on stone, louder the faster it goes, and
   hits like a boulder on rock: rocks it hits smash into pieces and it rolls on.
 - **Bee**: about one biome in two has a bee floating in it (the first is in the
   first meadow). Roll through it and it joins you, up to four. A bee flies out,
@@ -154,8 +159,8 @@ site or a tunnel); plain `http://<LAN address>` will report no WebGPU.
 When the jelly wears away, the player signs the roll by typing up to nine letters
 or digits. Each appears in the game as a giant jelly letter (the squishy
 letters from the Unix Jelly guides, drawn in the game's own scene) that falls in with a
-thump, and Enter sends it. **T**, or the
-"Top rolls" button, shows the table at any time.
+thump, and Enter sends it. Once the jelly has worn away, **T**, or the
+"Top rolls" button on the game over screen, shows the table. It is not offered during play.
 
 The browser is never trusted with the score. A small Cloudflare Worker (`worker/`,
 with a D1 database) acts as the referee of time:
@@ -171,6 +176,14 @@ with a D1 database) acts as the referee of time:
 This stops the one-line fake score; it does not stop someone who waits out the
 clock, or a program that plays well. Rolls that used a debug key are never offered.
 Going live is in `docs/plans/global-high-scores-todo.md`.
+
+### Demo mode
+
+Open the game with `?demo=true` and it plays itself: a loop of short scenes, each showing one thing off, with a
+caption and a fade between them. It runs through rolling and merging (with a magnet), bees fetching, a glass
+marble smashing rocks, a pond, seeds sprouting, ice, the cave and the lava. The controls are off (Esc leaves
+the demo to play), the HUD is hidden, nothing is sent to the score server, and the jelly cannot wear away.
+Click once for sound. The autopilot is `src/game/autopilot.ts`; the scenes are in `src/app/demo.ts`.
 
 ### Run it locally
 

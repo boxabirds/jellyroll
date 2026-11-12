@@ -19,7 +19,7 @@ import { renderLayers } from './sfx-render.ts';
 import { renderSnowLoop } from './snow-sounds.ts';
 import { renderMetalLoop } from './metal-sounds.ts';
 import { renderBuzzLoop, buzzLevel, dopplerRate, BUZZ_GAIN } from './bee-sounds.ts';
-import { beePickup, glassPickup, letterThump, levelUp, stoneImpact } from './companion-sounds.ts';
+import { beePickup, glassPickup, letterThump, levelUp, packetPickup, stoneImpact } from './companion-sounds.ts';
 import { CLIMB_RATIO, jumpSquish, landingSquish, magnetPickup, mergeSound, seedSpray, type Layer } from './sfx-sounds.ts';
 
 const DRONE_PROCESSOR = 'jellyland-jp8';
@@ -139,6 +139,7 @@ function recipes(): Recipe[] {
     list.push({ key: takeKey('glass', take), layers: () => glassPickup() });
     LANDING_STEPS.forEach((intensity, step) => list.push({ key: takeKey(`stone${step}`, take), layers: () => stoneImpact(intensity) }));
     list.push({ key: takeKey('bee', take), layers: () => beePickup() });
+    list.push({ key: takeKey('packet', take), layers: () => packetPickup() });
     list.push({ key: takeKey('thump', take), layers: () => letterThump(false) });
     list.push({ key: takeKey('thump-soft', take), layers: () => letterThump(true) });
     list.push({ key: takeKey('levelup', take), layers: () => levelUp() });
@@ -256,6 +257,7 @@ export class JellySound {
     if (ball.magnetPicked) this.play(takeKey('magnet', this.nextTake()));
     if (ball.seedsSprayed) this.play(takeKey('seeds', this.nextTake()));
     if (ball.glassPicked) this.play(takeKey('glass', this.nextTake()));
+    if (ball.packetFound) this.play(takeKey('packet', this.nextTake()));
     if (ball.beePicked) this.play(takeKey('bee', this.nextTake()));
     if (ball.shieldUp >= 0 || ball.flock.levelledUp) this.play(takeKey('levelup', this.nextTake()));
     // A marble does not squish as it jumps: it leaves the ground with a light knock of stone.
