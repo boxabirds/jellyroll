@@ -7,8 +7,9 @@
 import * as THREE from 'three/webgpu';
 
 /** Hard cap on physical pixels; DPR may fall below 1 on huge viewports. */
-const MAX_DRAWING_BUFFER_PIXELS = 4_000_000;
-const MAX_DEVICE_PIXEL_RATIO = 1.7;
+/** (Set by the performance budget: at 3 million pixels the GPU alone took a whole frame on a laptop; see scripts/perf.py.) */
+const MAX_DRAWING_BUFFER_PIXELS = 2_100_000;
+export const MAX_DEVICE_PIXEL_RATIO = 1.7;
 const TONE_MAPPING_EXPOSURE = 1.05;
 
 export async function createRenderer(fail: (e: unknown) => void) {

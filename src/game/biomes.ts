@@ -12,7 +12,7 @@
 import { smoothstep } from './noise.ts';
 
 export const BIOME_LENGTH = 1500;
-export const BIOME_TRANSITION = 200;
+export const BIOME_TRANSITION = 400;
 /** Each time round the whole sequence, every biome wears this much harder again (fraction of its base rate). */
 export const LOOP_WEAR_GAIN = 0.5;
 /** Each time round the sequence the jelly's minimum and default speeds are this much higher than the loop before (compounding). */
@@ -33,13 +33,14 @@ export type Biome = {
   readonly collectibles: number;
 };
 
-/** In course order. A collectible's kind is the index of the biome it grows in. */
+/** The biomes, each with its own index: a collectible's kind and a hole's kind are the index of the biome they belong to. The order they come in on the course is BIOME_ORDER. */
 export const BIOMES: readonly Biome[] = [
   { name: 'Meadow', wear: 1, steer: 1, hills: 1, moguls: 1, width: 1, rocks: 1, collectibles: 1 },
   { name: 'Ice', wear: 1.25, steer: 0.65, hills: 0.8, moguls: 0.45, width: 1.15, rocks: 0.5, collectibles: 0.95 },
   { name: 'Dunes', wear: 1.6, steer: 0.9, hills: 1.7, moguls: 0.3, width: 1.2, rocks: 0.3, collectibles: 0.85 },
   { name: 'Scree', wear: 2.2, steer: 1, hills: 1, moguls: 1.6, width: 0.82, rocks: 2.2, collectibles: 0.75 },
   { name: 'Lava', wear: 3.2, steer: 1, hills: 1.2, moguls: 1.3, width: 0.78, rocks: 1.3, collectibles: 0.7 },
+  { name: 'Cave', wear: 2.6, steer: 1, hills: 0.9, moguls: 1.1, width: 0.85, rocks: 0.6, collectibles: 0.85 },
 ];
 export const BIOME_COUNT = BIOMES.length;
 export const MEADOW = 0;
@@ -47,6 +48,16 @@ export const ICE = 1;
 export const DUNES = 2;
 export const SCREE = 3;
 export const LAVA = 4;
+export const CAVE = 5;
+
+/** The order the biomes come in down the course, and again after the last. */
+export const BIOME_ORDER: readonly number[] = [MEADOW, SCREE, ICE, DUNES, CAVE, LAVA];
+if (BIOME_ORDER.length !== BIOME_COUNT || new Set(BIOME_ORDER).size !== BIOME_COUNT) throw new Error('BIOME_ORDER must list every biome once');
+
+/** Where in the course order biome `kind` comes (0 for the first). */
+export function positionOfBiome(kind: number): number {
+  return BIOME_ORDER.indexOf(kind);
+}
 
 const HALF_TRANSITION = BIOME_TRANSITION / 2;
 
@@ -67,12 +78,38 @@ export function biomeBlend(s: number, stretch = biomeStretch(s)): number {
 
 /** Index into BIOMES of a stretch's starting biome. */
 export function biomeOfStretch(stretch: number): number {
-  return stretch % BIOME_COUNT;
+  return BIOME_ORDER[stretch % BIOME_COUNT];
 }
 
 /** How many times the whole sequence has been completed by the time stretch `stretch` starts. */
 export function loopOfStretch(stretch: number): number {
   return Math.floor(stretch / BIOME_COUNT);
+}
+
+/** How much of the ground at `s` is snow (the Ice biome): 1 in it, 0 out of it, blended across the transitions. */
+export function snowAt(s: number): number {
+  const stretch = biomeStretch(s);
+  const from = biomeOfStretch(stretch) === ICE ? 1 : 0, to = biomeOfStretch(stretch + 1) === ICE ? 1 : 0;
+  return from + (to - from) * biomeBlend(s, stretch);
+}
+
+/** How much of the ground at `s` is cave: 1 in it, 0 out of it, blended across the transitions. */
+export function caveAt(s: number): number {
+  const stretch = biomeStretch(s);
+  const from = biomeOfStretch(stretch) === CAVE ? 1 : 0, to = biomeOfStretch(stretch + 1) === CAVE ? 1 : 0;
+  return from + (to - from) * biomeBlend(s, stretch);
+}
+
+/** Course distance at which the cave nearest ahead of `s` (or the one it is in) begins. It is BIOME_LENGTH long. */
+export function caveStart(s: number): number {
+  const lap = BIOME_COUNT * BIOME_LENGTH, offset = positionOfBiome(CAVE) * BIOME_LENGTH;
+  return Math.max(0, Math.floor((s - offset - BIOME_LENGTH) / lap) + 1) * lap + offset;
+}
+
+/** How far inside the cave `s` is, measured from the nearer mouth (metres); 0 or less outside it. */
+export function caveDepth(s: number): number {
+  const start = caveStart(s);
+  return Math.min(s - start, start + BIOME_LENGTH - s);
 }
 
 /** The biome the course is mostly in at `s` (for names and labels). */

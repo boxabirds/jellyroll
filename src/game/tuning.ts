@@ -320,6 +320,21 @@ export const SEED_BEHIND_DISTANCE = 30;
 /** Tries to find a spot clear of rocks for one seed. */
 export const SEED_PLACEMENT_TRIES = 5;
 
+// --- Snow ---------------------------------------------------------------------
+// Rolling fast through snow packs it onto the jelly like a snowball. The coat protects against wear but makes
+// the jelly hard to steer; slow down and it falls off again.
+/** Metres of snow rolled over at speed to build a full coat. */
+export const SNOW_FULL_METRES = 140;
+/** Below this multiple of the minimum speed the coat starts to fall off (more quickly the slower it is). */
+export const SNOW_SHED_SPEED_FACTOR = 1.6;
+/** Fraction of the coat lost per second at a standstill; per second rolling on bare ground (scaled by how much of the ground is not snow); and per second in the air off the snow. */
+export const SNOW_SHED_RATE = 0.6;
+export const SNOW_SCRAPE_RATE = 0.45;
+export const SNOW_MELT_RATE = 0.08;
+/** At a full coat, steering is this much weaker and wear this much slower. */
+export const SNOW_STEER_LOSS = 0.8;
+export const SNOW_WEAR_PROTECTION = 0.85;
+
 // --- Holes (the obby) ---------------------------------------------------------
 // Each biome has its own kind of hole: ponds (Meadow), ice shards (Ice), oases (Dunes),
 // steam vents (Scree), lava (Lava). They start small and sparse and grow with every
@@ -328,14 +343,20 @@ export const SEED_PLACEMENT_TRIES = 5;
 export const HAZARD_FREE_UNTIL = 220;
 export const HAZARD_FULL_AT = 520;
 /** Holes are placed one per grid cell of this size (metres), in valley coordinates. */
-export const HAZARD_CELL = 10;
+export const HAZARD_CELL = 12;
 /** Holes grow as 1 - exp(-biomes passed / this), so each loop of the five biomes adds less but never stops. */
 export const HAZARD_GROWTH_BIOMES = 4;
 /** Chance a cell holds a hole, and a hole's radius, at the start and in the limit. A hole's radius never exceeds HAZARD_CELL. */
 export const HAZARD_CHANCE_START = 0.3;
-export const HAZARD_CHANCE_END = 0.72;
+export const HAZARD_CHANCE_END = 0.95;
 export const HAZARD_RADIUS_START = 2.4;
-export const HAZARD_RADIUS_END = 8.2;
+export const HAZARD_RADIUS_END = 9.2;
+/**
+ * A hole's edge is not a circle: its radius varies round it by these fractions of the radius (three waves of 2, 3
+ * and 5 lobes, each with its own phase). The biggest a hole can reach is HAZARD_RADIUS_END times one plus all
+ * three, which must stay within HAZARD_CELL.
+ */
+export const HAZARD_EDGE_WAVES = [0.14, 0.1, 0.06] as const;
 /** Each hole is this fraction smaller than the limit at random, at most. */
 export const HAZARD_RADIUS_SPREAD = 0.4;
 /** Metres over which a hole's edge goes from fully in to fully out. */
@@ -343,21 +364,27 @@ export const HAZARD_EDGE = 1.3;
 /** How far (metres) a hole sinks below the ground at its centre. */
 export const HAZARD_DEPTH = 0.4;
 /**
- * Ponds and oases are water, and water lies flat. A pond's surface is at the average height of its
- * rim. Inside, the ground is cut down on the high side and built up on the low side to a flat floor
- * HAZARD_POOL_DEPTH below that surface, by no more than HAZARD_POOL_MAX_DIP either way. So on level
- * ground the pool is a full flat-bottomed pond; on a slope the middle holds water, and where the
- * ground is too steep for the cut and fill to reach, only a bit of water shows under tall steep
- * sides. The jelly is in the water once the ground under it is below the surface, with a margin of
- * HAZARD_WET_FADE metres to ease in.
+ * Ponds, oases, icy water and lava are liquids, and liquids lie flat. A liquid hole is a basin cut into the
+ * ground, with a ragged outline (HAZARD_EDGE_WAVES). Its surface is level with the lowest point of its rim, where
+ * it would spill, so it is held in on every side. The basin's floor is flat, HAZARD_POOL_DEPTH below that, and
+ * its walls climb from the floor at HAZARD_WALL_SLOPE until they meet the ground. Ground higher than that is
+ * cut away by at most HAZARD_CUT_MAX, so on steep ground only the low part of the basin is deep enough to
+ * hold any liquid, under tall steep sides. The cut fades out over HAZARD_CUT_TAIL metres beyond the rim.
+ * Where holes overlap the deeper cut wins, so pools join. The jelly is in the liquid once the ground under
+ * it is below the surface, with a margin of HAZARD_WET_FADE metres to ease in.
  */
-export const HAZARD_POOL_DEPTH = 0.4;
-export const HAZARD_POOL_MAX_DIP = 0.8;
-/** A water hole's bank is this wide (metres), so that cutting a pool down into a slope never leaves a wall too steep to climb. */
-export const HAZARD_WATER_EDGE = 5;
+export const HAZARD_POOL_DEPTH = 0.5;
+export const HAZARD_WALL_SLOPE = 0.6;
+/** The flat floor reaches this fraction of the radius from the rim inward, at least (the walls climb over the rest). */
+export const HAZARD_WALL_FRACTION = 0.3;
+/** (No deeper than about the jelly's own height: in a deeper pit it drops out of sight behind the pit's wall.) */
+export const HAZARD_CUT_MAX = 1.3;
+export const HAZARD_CUT_TAIL = 12;
 export const HAZARD_WET_FADE = 0.15;
-/** Points around a hole's rim sampled to find its lowest. */
-export const HAZARD_RIM_SAMPLES = 16;
+/** Points around a divot's rim sampled to find its lowest. */
+export const HAZARD_RIM_SAMPLES = 48;
+/** The ground is also looked at this far outside the rim (metres): the lowest of all of it is where the water would spill. */
+export const HAZARD_RIM_MARGINS: readonly number[] = [0, 1.5];
 /** The clear lanes: how many, how far apart, how much each wanders, how wide (half width) at first and in the limit, and the soft edge. */
 export const HAZARD_LANES = 3;
 export const HAZARD_LANE_SPACING = 8.4;
@@ -365,7 +392,7 @@ export const HAZARD_LANE_WANDER = 1.2;
 export const HAZARD_LANE_WAVELENGTH = 70;
 export const HAZARD_LANE_HALF_START = 3.1;
 export const HAZARD_LANE_HALF_END = 2.5;
-export const HAZARD_LANE_SOFT = 1;
+export const HAZARD_LANE_SOFT = 2.5;
 /** Holes reach this far beyond the barrier that turns the jelly back from the ridge. */
 export const HAZARD_BANK_OVERRUN = 2;
 /**
@@ -381,7 +408,11 @@ export const HAZARD_EFFECTS = [
   { slow: 3, melt: 0.08, stab: 0, lift: 0 },
   { slow: 0.2, melt: 0.05, stab: 0, lift: 46 },
   { slow: 1.8, melt: 0.14, stab: 0, lift: 0 },
+  // Cave pool: like a pond.
+  { slow: 3, melt: 0.08, stab: 0, lift: 0 },
 ] as const;
+/** Holes also hurt more as they grow: melt, slowing and stabbing are this much stronger at full growth (so 2 means double). */
+export const HAZARD_HARDER_GAIN = 1;
 export const HAZARD_STAB_SPACING = 3;
 /** Speed kept after a stab. */
 export const HAZARD_STAB_KEEP = 0.92;
@@ -394,3 +425,130 @@ export const HAZARD_VENT_PHASE_PER_METRE = 0.017;
 // --- Finite differences -----------------------------------------------------
 /** Step used to estimate the terrain gradient. */
 export const GRADIENT_STEP = 0.25;
+
+// --- Shields (immunity badges) -----------------------------------------------
+/** Collectibles of one biome's kind needed to reach each shield level, one entry per level (each is on top of the last). */
+export const SHIELD_STEPS: readonly number[] = [100, 200, 300];
+/** How much of that biome's wear a shield of each level takes away (a fraction of the original), starting at level 1. */
+export const SHIELD_REDUCTION: readonly number[] = [0.1, 0.3, 0.6];
+
+// --- Glass marble power-up ----------------------------------------------------
+/** The jelly is glass for this long: no wear, no melting, no trail. */
+export const GLASS_SECONDS = 24;
+/** The marble turns from jelly to glass, and back, over this long (so the look and the sound ease in and out). */
+export const GLASS_EASE_SECONDS = 0.35;
+/** Each biome's stretch of course has a marble to find with this chance: 1 in GLASS_ODDS (at most one). */
+export const GLASS_ODDS = 2;
+export const GLASS_MARGIN = 250;
+export const GLASS_LATERAL_FRACTION = 0.3;
+export const GLASS_FLOAT_HEIGHT = 1.6;
+/** No marbles before the second biome: the first stretch is too gentle for one to be worth having. */
+export const GLASS_FREE_UNTIL = 1500;
+export const GLASS_PICKUP_RADIUS = 1.8;
+
+/** A glass marble smashes a rock it hits and loses this share of its speed doing so. */
+export const GLASS_BREAK_KEEP = 0.9;
+/** At most this many rocks are reported broken by one physics step. */
+export const MAX_BROKEN_PER_STEP = 4;
+
+// --- Bees ---------------------------------------------------------------------
+export const BEE_MAX = 4;
+/** Collectibles a bee must have brought in to reach each level, one entry per level (each on top of the last). Level n carries n + 1. */
+export const BEE_STEPS: readonly number[] = [100, 200, 300, 400];
+/** A biome's stretch of course holds a bee to find with this chance (at most one). */
+export const BEE_CHANCE = 0.5;
+export const BEE_MARGIN = 250;
+export const BEE_LATERAL_FRACTION = 0.5;
+export const BEE_FLOAT_HEIGHT = 1.3;
+export const BEE_FREE_UNTIL = 120;
+export const BEE_PICKUP_RADIUS = 1.8;
+/** The most a bee can ever carry at once (a level 4 bee). */
+export const BEE_MAX_CARGO = BEE_STEPS.length + 1;
+/** Bees look for collectibles this far around a point this far ahead of the jelly, refreshing the list this often. */
+export const BEE_SEARCH_RADIUS = 18;
+export const BEE_SEARCH_AHEAD = 8;
+export const BEE_SCAN_SECONDS = 0.3;
+export const BEE_MAX_CANDIDATES = 48;
+/** A bee flies at least this fast, and this many times the jelly's speed (plus the extra) so it can always catch up. */
+export const BEE_MIN_SPEED = 16;
+export const BEE_SPEED_FACTOR = 1.3;
+export const BEE_SPEED_EXTRA = 6;
+/** How quickly a bee's velocity follows what it wants (1/s). */
+export const BEE_STEER_RATE = 9;
+/** A bee takes a collectible within this distance of it, and gives its cargo to the jelly within this of its skin. */
+export const BEE_GRAB_DISTANCE = 0.45;
+export const BEE_DELIVER_REACH = 0.5;
+/** A bee near its target slows down inside this distance, so it settles on it. */
+export const BEE_SETTLE_DISTANCE = 1.5;
+/** Collectibles this far behind the jelly (metres of course) are given up on. */
+export const BEE_GIVE_UP_BEHIND = 10;
+/** Heeling: beside the jelly this far from its skin, each further pair this much further out and back; and how hard it is pulled to its place (1/s). */
+export const BEE_HEEL_SIDE = 0.9;
+export const BEE_HEEL_RANK_STEP = 0.9;
+export const BEE_HEEL_BACK = 0.3;
+export const BEE_HEEL_BACK_STEP = 0.8;
+export const BEE_HEEL_STIFFNESS = 5;
+export const BEE_HOVER_BOB = 0.12;
+export const BEE_BOB_RATE = 7;
+export const BEE_GROUND_CLEARANCE = 0.3;
+/** A bee bringing something back flies this much higher above the ground, so what it carries does not drag in the grass. */
+export const BEE_CARRY_CLEARANCE = 1.2;
+
+// --- Damage numbers -----------------------------------------------------------
+/** Wear and melting are added up and shown as "-N cm" once they come to this many centimetres (of diameter)... */
+export const DAMAGE_POPUP_MIN_CM = 1;
+/** ...and no more often than this. */
+export const DAMAGE_POPUP_GAP_SECONDS = 0.4;
+
+// --- Cave: the hill it runs through ------------------------------------------
+/**
+ * The cave is a tunnel through a hill, and the hill is the ground itself: for the length of the cave the banks either side
+ * of the valley rise by this much (metres), starting this far beyond the valley floor and fully risen this far beyond it.
+ * At each mouth the rise comes up over CAVE_PORTAL metres of course, which is the slope of the hillside the course runs into.
+ */
+export const CAVE_HILL_RISE = 120;
+export const CAVE_WALL_FROM = 20;
+export const CAVE_WALL_TO = 62;
+export const CAVE_PORTAL = 90;
+
+// --- Cave: stalagmites and stalactites ----------------------------------------
+/** One cell this size (metres) holds at most one stalagmite and at most one stalactite. */
+export const SPIKE_CELL = 6;
+/** Chance a cell in the cave holds a stalagmite, and a stalactite. */
+export const STALAGMITE_CHANCE = 0.42;
+export const STALACTITE_CHANCE = 0.42;
+/** A stalagmite's base radius (smallest, largest), and its height in radii (least, most). */
+export const STALAGMITE_MIN_RADIUS = 0.35;
+export const STALAGMITE_MAX_RADIUS = 0.95;
+export const STALAGMITE_MIN_ASPECT = 3;
+export const STALAGMITE_MAX_ASPECT = 5.5;
+/** The jelly collides with a stalagmite as an upright post this share of its base radius wide, up to this share of its height. */
+export const STALAGMITE_POST_RADIUS = 0.65;
+export const STALAGMITE_POST_HEIGHT = 0.8;
+export const STALAGMITE_RESTITUTION = 0.3;
+/** They stand this far beyond the valley floor up the banks, at most. */
+export const SPIKE_BANK_REACH = 7;
+/** A stalactite hangs from the cave's roof; its tip is never nearer the ground than this. Its length (shortest, longest) and base radius. */
+export const STALACTITE_MIN_TIP = 5;
+export const STALACTITE_MIN_LENGTH = 3;
+export const STALACTITE_MAX_LENGTH = 24;
+export const STALACTITE_MIN_RADIUS = 0.35;
+export const STALACTITE_MAX_RADIUS = 2;
+/** This share of stalactites fall as the jelly comes near. */
+export const STALACTITE_FALL_CHANCE = 0.2;
+/** One lets go when the jelly would arrive under it in about the time it takes to fall (times this), within these distances. */
+export const STALACTITE_LEAD = 1.05;
+export const STALACTITE_TRIGGER_MIN = 7;
+export const STALACTITE_TRIGGER_MAX = 48;
+/** How often (seconds) the cave is looked over for one about to fall, and the most falling at once. */
+export const STALACTITE_SCAN_SECONDS = 0.1;
+export const MAX_FALLERS = 4;
+/** A falling stalactite that hits the jelly takes this share of its radius and leaves it this share of its speed. */
+export const STALACTITE_DAMAGE = 0.07;
+export const STALACTITE_HIT_KEEP = 0.6;
+/** It hits if its tip comes within this (plus the two radii) of the jelly. */
+export const STALACTITE_HIT_MARGIN = 0.15;
+/** A marble that knocks a stalagmite over keeps this share of its speed. */
+export const STALAGMITE_TOPPLE_KEEP = 0.95;
+/** At most this many stalagmites are reported knocked over, and stalactites landed, by one physics step. */
+export const MAX_SPIKE_EVENTS = 4;

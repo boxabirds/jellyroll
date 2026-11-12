@@ -15,7 +15,7 @@
  *   filter > 0 is a high-pass, filter < 0 a low-pass. It is resonant, and measured
  *   on noise its peak sits at about twice the number given (-350 peaks near 700 Hz).
  */
-import { DUNES, ICE, LAVA, MEADOW, SCREE } from '../game/biomes.ts';
+import { CAVE, DUNES, ICE, LAVA, MEADOW, SCREE } from '../game/biomes.ts';
 
 export type Layer = { start: number; gain: number; zzfx: Record<string, number> };
 /** Uniform in [0, 1). */
@@ -530,8 +530,13 @@ const MERGE_SOUNDS: MergeSound[] = [];
 MERGE_SOUNDS[MEADOW] = (size, climbStep, random) => mergePlop(size, climbStep, random);
 MERGE_SOUNDS[ICE] = snowCrunch;
 MERGE_SOUNDS[DUNES] = cactusBoing;
-MERGE_SOUNDS[SCREE] = crystalChime;
+const oreChime = (size: number, climbStep?: number, random?: Random) => crystalChime(Math.min(1, size * ORE_SIZE_GAIN + ORE_SIZE_BIAS), climbStep, random);
+MERGE_SOUNDS[SCREE] = oreChime;
 MERGE_SOUNDS[LAVA] = emberHiss;
+/** Ore rings like a crystal, a little lower: heavier stuff (it is treated as a larger crystal by this much). */
+const ORE_SIZE_GAIN = 0.6;
+const ORE_SIZE_BIAS = 0.4;
+MERGE_SOUNDS[CAVE] = crystalChime;
 
 /**
  * The sound of a collectible of `kind` merging into the jelly.

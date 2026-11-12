@@ -6,7 +6,7 @@
  * Holes also cover the banks up to the ridge barrier, so riding up the wall is
  * no way round them.
  */
-import { BIOME_LENGTH, DUNES, MEADOW, dominantBiome } from './biomes.ts';
+import { BIOME_LENGTH, CAVE, DUNES, ICE, LAVA, MEADOW, dominantBiome } from './biomes.ts';
 import { hash2, smoothstep } from './noise.ts';
 import {
   HAZARD_BANK_OVERRUN,
@@ -14,6 +14,7 @@ import {
   HAZARD_CHANCE_END,
   HAZARD_CHANCE_START,
   HAZARD_EDGE,
+  HAZARD_EDGE_WAVES,
   HAZARD_FREE_UNTIL,
   HAZARD_FULL_AT,
   HAZARD_GROWTH_BIOMES,
@@ -27,7 +28,6 @@ import {
   HAZARD_RADIUS_END,
   HAZARD_RADIUS_SPREAD,
   HAZARD_RADIUS_START,
-  HAZARD_WATER_EDGE,
   RIDGE_BARRIER_INSET,
   RIDGE_DISTANCE,
   WORLD_SEED,
@@ -47,12 +47,16 @@ export type HazardSample = {
   depth: number;
   /** The biome whose kind of hole this is. */
   kind: number;
-  /** The hole this point is in: its grid cell and its disc in valley coordinates. */
-  cellI: number; cellJ: number; centreU: number; centreS: number; radius: number;
+  /** The hole this point is mostly in: its grid cell and its disc in valley coordinates. */
+  cellI: number; cellJ: number; centreU: number; centreS: number; radius: number; seed: number;
+  /** How far into it the point is (0..1), before the lanes and the barrier are allowed for, and the factor for those (0..1). */
+  inside: number; factor: number;
+  /** The next strongest hole the point is in, if any (inside2 is 0 if none): the ground blends between the two so it never jumps. */
+  kind2: number; cellI2: number; cellJ2: number; centreU2: number; centreS2: number; radius2: number; seed2: number; inside2: number;
 };
 
 export function createHazardSample(): HazardSample {
-  return { depth: 0, kind: 0, cellI: 0, cellJ: 0, centreU: 0, centreS: 0, radius: 0 };
+  return { depth: 0, kind: 0, cellI: 0, cellJ: 0, centreU: 0, centreS: 0, radius: 0, seed: 0, inside: 0, factor: 0, kind2: 0, cellI2: 0, cellJ2: 0, centreU2: 0, centreS2: 0, radius2: 0, seed2: 0, inside2: 0 };
 }
 
 /**
@@ -107,10 +111,11 @@ export function hazardReach(halfWidth: number): number {
   return halfWidth + RIDGE_DISTANCE - RIDGE_BARRIER_INSET + HAZARD_BANK_OVERRUN;
 }
 
-/** Ponds and oases are water; the other holes are not. */
-export function isWaterKind(kind: number): boolean {
-  return kind === MEADOW || kind === DUNES;
+/** Ponds, oases, the icy water the shards stand in, and lava are liquids, which lie flat; vents are not. */
+export function isLiquidKind(kind: number): boolean {
+  return kind === MEADOW || kind === ICE || kind === DUNES || kind === LAVA || kind === CAVE;
 }
+
 
 /** One hole before the lanes are cut out of it: a disc in valley coordinates. */
 export type HoleDisc = { u: number; s: number; radius: number; kind: number; seed: number };
@@ -177,32 +182,68 @@ export function holeInCell(i: number, j: number, out: HoleDisc): boolean {
 
 const disc = createHoleDisc();
 
+/** How freely holes act at valley position (`u`, `s`): 0 inside a lane, easing to 1 beyond it, and fading out at the ridge barrier. */
+export function hazardFactor(u: number, s: number, halfWidth: number): number {
+  return (1 - laneShelter(u, s)) * (1 - smoothstep(hazardReach(halfWidth), hazardReach(halfWidth) + HAZARD_EDGE, Math.abs(u)));
+}
+
 /**
  * Depth of the hole at valley position (`u` across from the centre line, `s` along) where the
  * valley is `halfWidth` wide; the hole's kind goes into `out`. Returns the depth.
  */
+/** How far into a hole the point (u, s) is: 0 outside its ragged rim, easing up to 1 a little inside it. */
+export function insideOf(hole: HoleDisc, u: number, s: number): number {
+  const du = u - hole.u, ds = s - hole.s;
+  const distance = Math.sqrt(du * du + ds * ds);
+  if (distance >= hole.radius * MAX_EDGE_FACTOR) return 0;
+  return smoothstep(edgeRadius(hole.radius, hole.seed, Math.atan2(ds, du)), edgeRadius(hole.radius, hole.seed, Math.atan2(ds, du)) - HAZARD_EDGE, distance);
+}
+
+/** The most a hole's edge can stand out beyond its nominal radius, as a factor. */
+const MAX_EDGE_FACTOR = 1 + HAZARD_EDGE_WAVES[0] + HAZARD_EDGE_WAVES[1] + HAZARD_EDGE_WAVES[2];
+
+/**
+ * Where the edge of a hole of nominal `radius` is, in direction `angle` from its centre: each hole's own
+ * irregular outline, from its `seed`.
+ */
+export function edgeRadius(radius: number, seed: number, angle: number): number {
+  const phase = seed * TAU;
+  return radius * (1
+    + HAZARD_EDGE_WAVES[0] * Math.sin(2 * angle + phase)
+    + HAZARD_EDGE_WAVES[1] * Math.sin(3 * angle + phase * 2.3 + 1.7)
+    + HAZARD_EDGE_WAVES[2] * Math.sin(5 * angle + phase * 3.7 + 0.4));
+}
+
 export function hazardAt(u: number, s: number, halfWidth: number, out: HazardSample): number {
-  out.depth = 0;
+  out.depth = 0; out.inside = 0; out.inside2 = 0;
   if (s < HAZARD_FREE_UNTIL) return 0;
   const reach = hazardReach(halfWidth);
   const absU = Math.abs(u);
   if (absU > reach + HAZARD_EDGE) return 0;
   const cellU = holeCellIndex(u), cellS = holeCellIndex(s);
-  let best = 0, bestKind = 0, bestI = 0, bestJ = 0, bestU = 0, bestS = 0, bestRadius = 0;
+  let best = 0, bestKind = 0, bestI = 0, bestJ = 0, bestU = 0, bestS = 0, bestRadius = 0, bestSeed = 0;
+  let second = 0, secondKind = 0, secondI = 0, secondJ = 0, secondU = 0, secondS = 0, secondRadius = 0, secondSeed = 0;
   for (let ds = -NEIGHBOURS; ds <= NEIGHBOURS; ds++) {
     for (let du = -NEIGHBOURS; du <= NEIGHBOURS; du++) {
       if (!holeInCell(cellU + du, cellS + ds, disc)) continue;
-      const edge = isWaterKind(disc.kind) ? Math.min(HAZARD_WATER_EDGE, disc.radius) : HAZARD_EDGE;
-      const inside = smoothstep(disc.radius, disc.radius - edge, Math.hypot(u - disc.u, s - disc.s));
-      if (inside > best) { best = inside; bestKind = disc.kind; bestI = cellU + du; bestJ = cellS + ds; bestU = disc.u; bestS = disc.s; bestRadius = disc.radius; }
+      const inside = insideOf(disc, u, s);
+      if (inside > best) {
+        second = best; secondKind = bestKind; secondI = bestI; secondJ = bestJ; secondU = bestU; secondS = bestS; secondRadius = bestRadius; secondSeed = bestSeed;
+        best = inside; bestKind = disc.kind; bestI = cellU + du; bestJ = cellS + ds; bestU = disc.u; bestS = disc.s; bestRadius = disc.radius; bestSeed = disc.seed;
+      } else if (inside > second) {
+        second = inside; secondKind = disc.kind; secondI = cellU + du; secondJ = cellS + ds; secondU = disc.u; secondS = disc.s; secondRadius = disc.radius; secondSeed = disc.seed;
+      }
     }
   }
   if (best === 0) return 0;
   // Holes stop at the barrier, fading over the last HAZARD_EDGE.
-  const depth = best * (1 - laneShelter(u, s)) * (1 - smoothstep(reach, reach + HAZARD_EDGE, absU));
+  const factor = (1 - laneShelter(u, s)) * (1 - smoothstep(reach, reach + HAZARD_EDGE, absU));
+  const depth = best * factor;
   if (depth === 0) return 0;
   out.depth = depth;
   out.kind = bestKind;
-  out.cellI = bestI; out.cellJ = bestJ; out.centreU = bestU; out.centreS = bestS; out.radius = bestRadius;
+  out.cellI = bestI; out.cellJ = bestJ; out.centreU = bestU; out.centreS = bestS; out.radius = bestRadius; out.seed = bestSeed;
+  out.inside = best; out.factor = factor;
+  out.kind2 = secondKind; out.cellI2 = secondI; out.cellJ2 = secondJ; out.centreU2 = secondU; out.centreS2 = secondS; out.radius2 = secondRadius; out.seed2 = secondSeed; out.inside2 = second;
   return depth;
 }

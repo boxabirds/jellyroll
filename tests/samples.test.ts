@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { test } from 'node:test';
 import { allSampleFiles, HARD_LANDING_FROM, holeVariants, landingVariants, mergeVariants, type HoleSound } from '../src/audio/sample-sounds.ts';
-import { DUNES, ICE, LAVA, MEADOW, SCREE } from '../src/game/biomes.ts';
+import { CAVE, DUNES, ICE, LAVA, MEADOW, SCREE } from '../src/game/biomes.ts';
 
 const DIR = new URL('../src/audio/samples/', import.meta.url);
 const HOLE_SOUNDS: HoleSound[] = ['splash', 'wade', 'stab', 'hiss', 'lava', 'bloop'];
@@ -20,7 +20,7 @@ test('every recorded sound the recipes name exists, is a real audio file, and no
 });
 
 test('every recipe is well formed: sane pitch, loudness and timing', () => {
-  const all = [MEADOW, ICE, DUNES, SCREE].flatMap(kind => [...mergeVariants(kind)!]).concat([...landingVariants(0), ...landingVariants(1)], HOLE_SOUNDS.flatMap(name => [...holeVariants(name)]));
+  const all = [MEADOW, ICE, DUNES, SCREE, LAVA, CAVE].flatMap(kind => [...mergeVariants(kind)!]).concat([...landingVariants(0), ...landingVariants(1)], HOLE_SOUNDS.flatMap(name => [...holeVariants(name)]));
   for (const variant of all) {
     assert.ok(variant.length >= 1 && variant.length <= 3);
     assert.ok(variant[0].delay === 0, 'the first layer starts at once');
@@ -36,10 +36,14 @@ test('each kind has the variety chosen for it', () => {
   assert.equal(mergeVariants(MEADOW)!.length, 3, 'three layered combinations for the mushroom');
   assert.equal(mergeVariants(ICE)!.length, 5, 'all five snow crunches');
   assert.ok(mergeVariants(DUNES)!.length >= 3 && mergeVariants(DUNES)!.every(v => v.length === 2), 'the cactus is a wet crunch: two layers');
-  const crystal = mergeVariants(SCREE)!;
+  // The crystals are the cave's now; the scree has ore.
+  const crystal = mergeVariants(CAVE)!;
+  assert.ok(mergeVariants(SCREE)!.length >= 3);
   assert.ok(crystal.length >= 7);
   assert.ok(!allSampleFiles().some(file => /bong|bell/i.test(file)), 'no bong or bell for the crystal');
-  assert.equal(mergeVariants(LAVA), undefined, 'the ember keeps the synthesised sound');
+  const ember = mergeVariants(LAVA)!;
+  assert.ok(ember.length >= 3 && ember.every(variant => variant[0].rate < 0.85), 'the ember is a thick blob: slowed-down mud and slime');
+  assert.ok(ember.every(variant => variant.some(layer => /mud|slime|bubble/.test(layer.file))));
 });
 
 test('landings: one soft recipe, and hard ones that pair each heavy thud with the splat', () => {

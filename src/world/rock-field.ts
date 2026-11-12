@@ -6,7 +6,7 @@ import * as THREE from 'three/webgpu';
 import { mx_noise_float, positionLocal, vec3 } from 'three/tsl';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { valueNoise2 } from '../game/noise.ts';
-import { createRock, rockCellIndex, rockInCell } from '../game/rocks.ts';
+import { createRock, isRockBroken, rockCellIndex, rockInCell, type RockLedger } from '../game/rocks.ts';
 import { RIDGE_DISTANCE, ROCK_CELL, VALLEY_HALF_WIDTH, VALLEY_HALF_WIDTH_SWING, WORLD_SEED } from '../game/tuning.ts';
 import { rockColorAt } from './biome-looks.ts';
 import { VIEW_DISTANCE } from './terrain-mesh.ts';
@@ -73,6 +73,7 @@ export class RockField {
   private cellX = Number.NaN;
   private cellZ = Number.NaN;
   private originZ = Number.NaN;
+  private smashed = -1;
 
   constructor() {
     const material = new THREE.MeshStandardNodeMaterial({ roughness: ROCK_ROUGHNESS, metalness: 0 });
@@ -80,28 +81,26 @@ export class RockField {
     // The rock's colour comes per instance: its biome's stone, at its own shade.
     material.colorNode = vec3(mottle);
     this.mesh = new THREE.InstancedMesh(createRockGeometry(), material, MAX_ROCKS);
-    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     // The colours are rewritten whenever the rocks are, so their buffer must be dynamic too: made on the
     // first rebuild it would be a static one, and a static buffer can keep showing the old rocks' colours.
     for (let i = 0; i < MAX_ROCKS; i++) this.mesh.setColorAt(i, this.color.setScalar(1));
-    this.mesh.instanceColor!.setUsage(THREE.DynamicDrawUsage);
     this.mesh.count = 0;
     // Instances are spread along hundreds of metres; the single-rock bounding
     // sphere would cull the whole field.
     this.mesh.frustumCulled = false;
   }
 
-  update(worldX: number, worldZ: number, originZ: number) {
+  update(worldX: number, worldZ: number, originZ: number, broken: RockLedger) {
     const cellX = rockCellIndex(worldX), cellZ = rockCellIndex(worldZ);
-    if (cellX === this.cellX && cellZ === this.cellZ && originZ === this.originZ) return;
-    this.cellX = cellX; this.cellZ = cellZ; this.originZ = originZ;
+    if (cellX === this.cellX && cellZ === this.cellZ && originZ === this.originZ && broken.total === this.smashed) return;
+    this.cellX = cellX; this.cellZ = cellZ; this.originZ = originZ; this.smashed = broken.total;
     const { rock, matrix, position, rotation, scale, euler, mesh } = this;
     const shade = this.color;
     let count = 0;
     // Forward is -Z, so "ahead" is toward lower cell indices.
     for (let z = cellZ - CELLS_AHEAD; z <= cellZ + CELLS_BEHIND && count < MAX_ROCKS; z++) {
       for (let x = cellX - CELLS_ACROSS; x <= cellX + CELLS_ACROSS && count < MAX_ROCKS; x++) {
-        if (!rockInCell(x, z, rock)) continue;
+        if (!rockInCell(x, z, rock) || isRockBroken(broken, x, z)) continue;
         position.set(rock.x, rock.y, rock.z - originZ);
         euler.set(0, rock.look * TAU, 0);
         rotation.setFromEuler(euler);

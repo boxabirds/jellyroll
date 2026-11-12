@@ -6,6 +6,7 @@
 import { rockScale } from './biomes.ts';
 import { createHazardSample, hazardAt } from './hazards.ts';
 import { hash2, smoothstep, valueNoise1 } from './noise.ts';
+import { createMushroomLedger, isMushroomTaken, resetMushroomLedger, takeMushroom, type MushroomLedger } from './mushrooms.ts';
 import { courseCenter, courseHalfWidth, kickerHeight, terrainHeight } from './terrain.ts';
 import {
   RIDGE_DISTANCE,
@@ -33,6 +34,13 @@ const SEED_DENSITY = WORLD_SEED + 16;
 const holeScratch = createHazardSample();
 
 export type Rock = { x: number; y: number; z: number; radius: number; look: number };
+
+/** Which rocks have been smashed (by the glass marble): a ring of cells, like the collectibles' ledger. */
+export type RockLedger = MushroomLedger;
+export const createRockLedger = createMushroomLedger;
+export const resetRockLedger = resetMushroomLedger;
+export const isRockBroken = isMushroomTaken;
+export const breakRock = takeMushroom;
 
 export function createRock(): Rock {
   return { x: 0, y: 0, z: 0, radius: 0, look: 0 };

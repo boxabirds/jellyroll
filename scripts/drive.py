@@ -2,7 +2,7 @@
 
 Usage: uv run --with playwright scripts/drive.py <url> <out-dir> [script]
 The script is a comma-separated list of steps: `shot:name`, `zoom:name` (crop around the jelly), `wait:seconds`,
-`down:Key`, `up:Key`, `place:s/lateral/lift`, `resize:radius`, `magnet` (switch the magnet on), `seeds` (spray a seed packet), `tdown:id/x/y`, `tmove:id/x/y`, `tup:id` (touches, with MOBILE=1), `tap:selector`, `orient:alpha/beta/gamma`, `bbox:selector`, `ctl` (print the control values), `probe:kind/radius` (play a merge sound, report source and peak), `samples`, `toggle:part/0|1`, `frames:seconds` (frame-time statistics; env VIEW_W, VIEW_H, DSF set the window), `fps:seconds`, `demo:kind/radius/look` (start a merge on the jelly's right), `snap` (print the debug snapshot).
+`down:Key`, `up:Key`, `place:s/lateral/lift`, `resize:radius`, `magnet` (switch the magnet on), `seeds` (spray a seed packet), `glass` (become a glass marble), `bee` (add a bee), `shield:kind/count` (set one biome's collected count), `tdown:id/x/y`, `tmove:id/x/y`, `tup:id` (touches, with MOBILE=1), `tap:selector`, `orient:alpha/beta/gamma`, `bbox:selector`, `ctl` (print the control values), `probe:kind/radius` (play a merge sound, report source and peak), `samples`, `toggle:part/0|1`, `frames:seconds` (frame-time statistics; env VIEW_W, VIEW_H, DSF set the window), `fps:seconds`, `demo:kind/radius/look` (start a merge on the jelly's right), `snap` (print the debug snapshot).
 """
 import json
 import os
@@ -113,6 +113,13 @@ def main() -> int:
                 page.evaluate("window.__jellyland.seeds()")
             elif kind == "magnet":
                 page.evaluate("window.__jellyland.magnet()")
+            elif kind == "glass":
+                page.evaluate("window.__jellyland.glass()")
+            elif kind == "bee":
+                page.evaluate("window.__jellyland.bee()")
+            elif kind == "shield":
+                shield_kind, _, count = arg.partition("/")
+                page.evaluate(f"window.__jellyland.shield({shield_kind}, {count})")
             elif kind == "resize":
                 page.evaluate(f"window.__jellyland.resize({arg})")
             elif kind == "snap":

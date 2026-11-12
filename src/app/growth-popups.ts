@@ -8,7 +8,7 @@ import { growthCentimetres, MIN_VISIBLE_GROWTH_CM } from '../game/growth.ts';
 import type { Pickup } from '../game/physics.ts';
 import { sweetColor } from '../render/colors.ts';
 
-const POOL = 12;
+const POOL = 16;
 /** The label starts this far above the top of the jelly (fraction of its radius). */
 const ABOVE_TOP = 0.25;
 /** Labels from merges in quick succession are fanned out sideways by this many pixels each. */
@@ -17,6 +17,7 @@ const FAN_PX = 34;
 const FAN_WINDOW_MS = 260;
 const MAX_FAN = 4;
 const MAX_SIZE_LABEL = 'max size';
+const LOSS_TINT = '#e11d1d';
 
 export class GrowthPopups {
   private readonly elements: HTMLElement[] = [];
@@ -47,11 +48,16 @@ export class GrowthPopups {
    * @param now    a clock in milliseconds
    */
   spawn(pickup: Pickup, center: THREE.Vector3, jellyRadius: number, now: number) {
+    const cm = growthCentimetres(pickup.jellyRadius, pickup.volume);
+    this.place(cm >= MIN_VISIBLE_GROWTH_CM ? `+${Math.max(1, Math.round(cm))} cm` : MAX_SIZE_LABEL, sweetColor(pickup.kind, pickup.color).deep.getStyle(), false, center, jellyRadius, now);
+  }
+
+  private place(text: string, tint: string, loss: boolean, center: THREE.Vector3, jellyRadius: number, now: number) {
     const element = this.elements[this.next];
     this.next = (this.next + 1) % POOL;
-    const cm = growthCentimetres(pickup.jellyRadius, pickup.volume);
-    element.textContent = cm >= MIN_VISIBLE_GROWTH_CM ? `+${Math.max(1, Math.round(cm))} cm` : MAX_SIZE_LABEL;
-    element.style.setProperty('--tint', sweetColor(pickup.kind, pickup.color).deep.getStyle());
+    element.textContent = text;
+    element.classList.toggle('loss', loss);
+    element.style.setProperty('--tint', tint);
     // Where the top of the jelly is on screen.
     this.top.set(center.x, center.y + jellyRadius * (1 + ABOVE_TOP), center.z).project(this.camera);
     this.fan = now - this.lastSpawn < FAN_WINDOW_MS ? Math.min(this.fan + 1, MAX_FAN) : 0;
@@ -64,6 +70,11 @@ export class GrowthPopups {
     element.classList.remove('playing');
     void element.offsetWidth;
     element.classList.add('playing');
+  }
+
+  /** A red "-N cm" that drops away from the top of the jelly, for what wear and melting took. */
+  spawnLoss(centimetres: number, center: THREE.Vector3, jellyRadius: number, now: number) {
+    this.place(`\u2212${centimetres} cm`, LOSS_TINT, true, center, jellyRadius, now);
   }
 
   clear() {

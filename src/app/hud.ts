@@ -1,5 +1,5 @@
 /** The few numbers on screen: the score (distance covered), speed, the jelly's size, and the best score. */
-import { BIOMES, biomeBlend, biomeOfStretch, biomeStretch, dominantBiome, wearScale } from '../game/biomes.ts';
+import { BIOMES, biomeBlend, biomeOfStretch, biomeStretch, dominantBiome, snowAt, wearScale } from '../game/biomes.ts';
 import { ballSpeed, type Ball } from '../game/physics.ts';
 import { KMH_PER_MS, MIN_RADIUS, START_RADIUS } from '../game/tuning.ts';
 
@@ -10,6 +10,10 @@ const CENTIMETRES_PER_METRE = 100;
 const LOW_SIZE_FRACTION = 0.35;
 const BANNER_SECONDS = 3.5;
 const TOAST_SECONDS = 2.4;
+/** A warning stays up long enough to read, and is given each time the jelly comes onto snow (once at least this much of the ground is snow). */
+const WARNING_SECONDS = 7;
+const SNOW_WARNING_FROM = 0.2;
+export const SNOW_WARNING = 'Warning! Snow sticks to jelly, limits control. Slow down to shake it off';
 /** The size readout flashes when it has grown by more than this many centimetres since the last refresh. */
 const GROWTH_PULSE_CM = 0;
 
@@ -19,6 +23,7 @@ function blendedBase(s: number) {
   const from = BIOMES[biomeOfStretch(stretch)].wear, to = BIOMES[biomeOfStretch(stretch + 1)].wear;
   return from + (to - from) * biomeBlend(s, stretch);
 }
+const PERCENT = 100;
 const BEST_STORAGE_KEY = 'jellyland.best-distance';
 
 export class Hud {
@@ -28,6 +33,7 @@ export class Hud {
   private readonly hints = document.querySelector<HTMLElement>('#hints')!;
   private readonly size = document.querySelector<HTMLElement>('#size')!;
   private readonly merges = document.querySelector<HTMLElement>('#merges')!;
+  private readonly snow = document.querySelector<HTMLElement>('#snow')!;
   private readonly air = document.querySelector<HTMLElement>('#air')!;
   private readonly finalAir = document.querySelector<HTMLElement>('#final-air')!;
   private readonly banner = document.querySelector<HTMLElement>('#biome-banner')!;
@@ -36,6 +42,9 @@ export class Hud {
   private readonly toastElement = document.querySelector<HTMLElement>('#toast')!;
   private readonly alarmElement = document.querySelector<HTMLElement>('#alarm')!;
   private toastSeconds = 0;
+  private readonly warningElement = document.querySelector<HTMLElement>('#warning')!;
+  private warningSeconds = 0;
+  private onSnow = false;
   private shownBiome = -1;
   private lastCentimetres = 0;
   private bannerSeconds = 0;
@@ -54,6 +63,8 @@ export class Hud {
     this.bannerSeconds = Math.max(0, this.bannerSeconds - dt);
     this.toastSeconds = Math.max(0, this.toastSeconds - dt);
     this.toastElement.classList.toggle('shown', this.toastSeconds > 0);
+    this.warningSeconds = Math.max(0, this.warningSeconds - dt);
+    this.warningElement.classList.toggle('shown', this.warningSeconds > 0);
     if (this.sinceRefresh < REFRESH_SECONDS) return;
     this.sinceRefresh = 0;
     this.showBiome(-ball.z);
@@ -73,6 +84,7 @@ export class Hud {
     const life = (ball.radius - MIN_RADIUS) / (START_RADIUS - MIN_RADIUS);
     this.size.parentElement!.classList.toggle('low', life < LOW_SIZE_FRACTION);
     this.merges.textContent = ball.merges.toString();
+    this.snow.textContent = `${Math.round(ball.snow * PERCENT)}%`;
     this.air.textContent = formatSeconds(ball.airSeconds);
     this.magnet.classList.toggle('shown', ball.magnetSeconds > 0);
     this.magnetSeconds.textContent = formatSeconds(ball.magnetSeconds);
@@ -98,8 +110,17 @@ export class Hud {
     this.toastElement.classList.add('shown');
   }
 
+  /** A warning that stays up for a few seconds. */
+  warn(text: string) {
+    this.warningElement.textContent = text;
+    this.warningSeconds = WARNING_SECONDS;
+  }
+
   /** Announce each new biome for a few seconds as the jelly crosses into it. */
   private showBiome(s: number) {
+    const snowy = snowAt(s) >= SNOW_WARNING_FROM;
+    if (snowy && !this.onSnow) this.warn(SNOW_WARNING);
+    this.onSnow = snowy;
     const index = dominantBiome(s);
     if (index !== this.shownBiome) {
       // The very first biome is not news; every later one is.

@@ -30,7 +30,6 @@ export class SeedSpray {
   constructor() {
     const material = new THREE.MeshStandardNodeMaterial({ roughness: GLOSS, metalness: 0 });
     this.mesh = new THREE.InstancedMesh(new THREE.SphereGeometry(SEED_RADIUS, SEED_SEGMENTS, SEED_SEGMENTS), material, MAX_PLANTED);
-    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     for (let i = 0; i < MAX_PLANTED; i++) this.mesh.setColorAt(i, this.color.setScalar(1));
     this.mesh.count = 0;
     this.mesh.frustumCulled = false;

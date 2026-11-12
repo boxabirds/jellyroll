@@ -8,7 +8,7 @@
  * them on as it merges.
  */
 import * as THREE from 'three/webgpu';
-import { DUNES, ICE, LAVA, MEADOW, SCREE } from '../game/biomes.ts';
+import { CAVE, DUNES, ICE, LAVA, MEADOW, SCREE } from '../game/biomes.ts';
 
 const TINT_SATURATION_GAIN = 1.1;
 const TINT_MIN_LIGHTNESS = 0.62;
@@ -44,10 +44,12 @@ JARS[ICE] = [
 JARS[MEADOW] = ['#ff4d6d', '#62c934', '#3a5bff', '#ffc61a', '#ff8a2b', '#9b5cff'].map(sweet);
 /** Cacti: greens. */
 JARS[DUNES] = ['#3fae4c', '#7cb342', '#2e9d6a', '#9ccc65', '#43a047', '#5fbf8a'].map(sweet);
-/** Crystals: amethyst, emerald, topaz, ruby, sapphire, quartz. */
-JARS[SCREE] = [sweet('#b06cff'), sweet('#35d0a5'), sweet('#ffcf3a'), sweet('#ff4f7b'), sweet('#4f8dff'), pale('#ffffff', '#e6ecff')];
+/** Ore (the scree's): two golds, two silvers, two opals. Was crystals: amethyst, emerald, topaz, ruby, sapphire, quartz. */
+JARS[SCREE] = [pale('#ffe27a', '#ffb81f'), pale('#ffd04a', '#e89a00'), pale('#f2f5fa', '#b9c4d6'), pale('#e3e9f2', '#9fb0c8'), pale('#d8fff4', '#5fe0d0'), pale('#ffe6f6', '#ff9ad8')];
 /** Embers: reds through yellow. */
 JARS[LAVA] = ['#ff3b1f', '#ff6a00', '#ff9d00', '#ffd23a', '#ff2d55', '#ff7a3c'].map(sweet);
+/** Crystals (the cave's): amethyst, emerald, topaz, ruby, sapphire, quartz. */
+JARS[CAVE] = [sweet('#b06cff'), sweet('#35d0a5'), sweet('#ffcf3a'), sweet('#ff4f7b'), sweet('#4f8dff'), pale('#ffffff', '#e6ecff')];
 
 /** Tint and deep colour of colour `index` of a kind of collectible, in the renderer's linear working space. */
 export function sweetColor(kind: number, index: number): SweetColor {

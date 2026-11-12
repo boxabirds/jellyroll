@@ -4,20 +4,40 @@
  * input → fixed physics steps → world streaming → pose → reflections → draw.
  */
 import * as THREE from 'three/webgpu';
-import { BIOME_COUNT, BIOME_LENGTH, BIOMES, biomeStretch, dominantBiome, loopOfStretch, wearScale } from '../game/biomes.ts';
-import { hazardLevelBias, setHazardLevelBias } from '../game/hazards.ts';
-import { ballSpeed, createBall, grantMagnet, grow, resetBall, spraySeeds, stepBall } from '../game/physics.ts';
+import { BIOME_COUNT, BIOME_LENGTH, BIOME_ORDER, BIOMES, biomeStretch, dominantBiome, loopOfStretch, snowAt, wearScale } from '../game/biomes.ts';
+import { hazardLevelBias, hazardShape, setHazardLevelBias } from '../game/hazards.ts';
+import { addBee } from '../game/bees.ts';
+import { shieldLevel } from '../game/progression.ts';
+import { ballSpeed, createBall, grantGlass, grantMagnet, grow, resetBall, spraySeeds, stepBall } from '../game/physics.ts';
 import { MagnetItems } from '../world/magnet-items.ts';
 import { SeedPacketItems } from '../world/seed-packet-items.ts';
+import { GlassItems } from '../world/glass-items.ts';
+import { RockDebris } from '../world/rock-debris.ts';
+import { SpikeField } from '../world/spike-field.ts';
+import { CaveShell } from '../world/cave-shell.ts';
+import { BeeItems } from '../world/bee-items.ts';
+import { BeeFlock } from '../world/bee-flock.ts';
+import { GLASS_EASE_SECONDS } from '../game/tuning.ts';
 import { SeedSpray } from '../world/seed-spray.ts';
 import { START_COLOR } from '../render/colors.ts';
 import { MushroomField } from '../world/mushroom-field.ts';
 import { Merges } from '../game/merges.ts';
 import { Alarm } from '../game/alarm.ts';
+import { Stain } from '../game/stain.ts';
 import { GrowthPopups } from './growth-popups.ts';
+import { Badges } from './badges.ts';
+import { DamageNumbers } from '../game/damage.ts';
+import { BEE_MAX, SHIELD_REDUCTION } from '../game/tuning.ts';
+import { beeCapacity } from '../game/progression.ts';
 import { MergeSplash } from '../world/merge-splash.ts';
-import { SlimeTrail } from '../world/slime-trail.ts';
+import { SNOW_PATH_LOOK, SlimeTrail } from '../world/slime-trail.ts';
 import { HazardProps } from '../world/hazard-props.ts';
+import { WaterInteraction } from '../world/water-interaction.ts';
+import { WaterSurfaces } from '../world/water-surface.ts';
+import { WaterSim } from '../water/sim.ts';
+import { WaterSpray } from '../water/spray.ts';
+import { currentQuality } from '../water/quality.ts';
+import { waterSettings } from '../water/params.ts';
 import { JellySound, type SoundState } from '../audio/sound.ts';
 import { courseCenter, terrainHeight } from '../game/terrain.ts';
 import { MAGNET_RADIUS, MAX_FRAME_SECONDS, MUSHROOM_TOUCH, MAX_SUBSTEPS_PER_FRAME, MIN_SPEED, PHYSICS_STEP } from '../game/tuning.ts';
@@ -25,7 +45,8 @@ import { createWobble, resetWobble, stepWobble } from '../game/wobble.ts';
 import { createComposite } from '../render/composite.ts';
 import { loadEnvironment } from '../render/environment.ts';
 import { LocalReflectionProbe } from '../render/local-reflections.ts';
-import { createRenderer, MOBILE_MAX_DEVICE_PIXEL_RATIO, resizeView } from '../render/renderer.ts';
+import { createRenderer, MAX_DEVICE_PIXEL_RATIO, MOBILE_MAX_DEVICE_PIXEL_RATIO, resizeView } from '../render/renderer.ts';
+import { autoTune } from '../water/auto-tune.ts';
 import { TiltSensor } from './tilt.ts';
 import { TouchControls } from './touch-controls.ts';
 import { ChaseCamera } from '../world/chase-camera.ts';
@@ -45,7 +66,7 @@ const ENVIRONMENT_INTENSITY = 0.75;
 const CHUNKS_PER_FRAME = 1;
 const MILLISECONDS = 1000;
 /** Reflection faces captured per frame: fewer on phones. */
-const MOBILE_PROBE_FACES = 2;
+const MOBILE_PROBE_FACES = 1;
 /** Short vibrations (milliseconds) on a merge and on a hard landing, where the phone can vibrate. */
 const MERGE_BUZZ_MS = 12;
 const HARD_LANDING_BUZZ_MS = 28;
@@ -64,8 +85,8 @@ export type Game = { stop: () => void };
 export type DebugSnapshot = {
   x: number; y: number; z: number; speed: number; distance: number; grounded: boolean;
   throttle: number; steer: number; jump: boolean; squash: number; frames: number;
-  radius: number; merges: number; wornOut: boolean; mushroomsDrawn: number; airSeconds: number; magnetSeconds: number; seedsAlive: number;
-  biome: string; wear: number; holeDepth: number; holeKind: number;
+  radius: number; merges: number; wornOut: boolean; mushroomsDrawn: number; airSeconds: number; magnetSeconds: number; glassSeconds: number; trailTriangles: number; cost: Record<string, number>; water: unknown; spikesDown: number; spikesFallen: number; bees: number; beeDelivered: number; carried: number[]; shieldLevels: number[]; seedsAlive: number;
+  biome: string; wear: number; holeDepth: number; holeKind: number; snow: number; rippleMs: number;
   sound: SoundState; audioContext: string; soundsPlayed: number; soundPeak: number; muted: boolean; helpShown: boolean;
 };
 declare global {
@@ -80,6 +101,11 @@ declare global {
       resize: (radius: number) => void;
       /** Test hook: switch the magnet on as if one had just been picked up. */
       magnet: () => void;
+      bench: (count: number) => Promise<unknown>;
+      /** Test hooks: the glass marble now, a bee beside the jelly, and a count for one biome's shield (the level follows from the next pick-up). */
+      glass: () => void;
+      bee: () => void;
+      shield: (kind: number, count: number) => void;
       /** Test hook: spray a packet's worth of seeds from the jelly. */
       seeds: () => void;
       /** Test hook: play one merge sound and report whether it was recorded or synthesised, and how loud. */
@@ -112,6 +138,25 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   resetWobble(wobble, ball);
   const origin = new RenderOrigin();
   const lighting = createGroundLighting(environment.toLight, START_COLOR.deep);
+  // The water: ripples (sim), what is thrown up (spray), the surfaces themselves, and what the jelly does to them. How much
+  // work they do is set by the "processor intensity" setting (water/quality.ts), which is tuned for the device at load.
+  let quality = currentQuality();
+  const sim = new WaterSim(quality.simCells, quality.simHz, true);
+  const waterSpray = new WaterSpray(sim, quality);
+  const water = new WaterSurfaces(sim, quality);
+  water.sun.value.copy(environment.toLight);
+  const interaction = new WaterInteraction(sim, waterSpray);
+  let appliedQuality = JSON.stringify(quality);
+  const applyQuality = () => {
+    const next = currentQuality();
+    const text = JSON.stringify(next);
+    if (text === appliedQuality) return;
+    appliedQuality = text; quality = next;
+    sim.configure(next.simCells, next.simHz);
+    water.apply(next);
+    waterSpray.apply(next);
+  };
+  waterSettings.onChange(applyQuality);
   const terrain = new TerrainMesh(ground, lighting, environment.toLight);
   const rocks = new RockField();
   const jelly = new JellyBall();
@@ -119,8 +164,24 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   const merges = new Merges();
   const splash = new MergeSplash();
   const trail = new SlimeTrail();
+  const snowPath = new SlimeTrail(SNOW_PATH_LOOK);
+  const SNOW_PATH_COLOR = new THREE.Color('#8fa6c4');
+  /** The jelly leaves a path where the ground is at least this much snow. */
+  const SNOW_PATH_FROM = 0.6;
   const magnets = new MagnetItems();
   const packets = new SeedPacketItems();
+  const glassItems = new GlassItems();
+  const debris = new RockDebris();
+  const spikes = new SpikeField();
+  const cave = new CaveShell();
+  const beeItems = new BeeItems();
+  const bees = new BeeFlock();
+  /** 0 (jelly) to 1 (glass marble), eased so the change is seen and heard coming on and going off. */
+  let glassLevel = 0;
+  const WATER_NEEDS_CHUNKS_AHEAD = 2;
+  /** A landed stalactite breaks into pieces as a rock this many times its radius would. */
+  const SPIKE_DEBRIS_SIZE = 1.6;
+  let seedsExplained = false;
   const spray = new SeedSpray();
   const holes = new HazardProps();
   let playSeconds = 0;
@@ -130,20 +191,23 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   // reflection probe captures: jellies do not appear in each other's reflections.
   const jellies = new THREE.Group();
   jellies.add(jelly.group, mushrooms.group);
-  scene.add(terrain.group, rocks.mesh, holes.group, trail.mesh, splash.mesh, magnets.group, packets.group, spray.mesh, jellies);
+  scene.add(terrain.group, rocks.mesh, holes.group, water.mesh, waterSpray.group, snowPath.mesh, trail.mesh, splash.mesh, magnets.group, packets.group, glassItems.group, beeItems.group, bees.group, spray.mesh, debris.mesh, spikes.group, cave.group, jellies);
   // The reflection is re-rendered from the scene several times a frame, so it only draws the ground around the
   // jelly and leaves out everything too small to see in it.
   const coarse = matchMedia('(pointer: coarse)').matches;
   const probe = new LocalReflectionProbe(scene, jellies, environment.reflectionTexture, coarse ? MOBILE_PROBE_FACES : undefined, {
-    detail: [mushrooms.group, rocks.mesh, holes.group, trail.mesh, splash.mesh, magnets.group, packets.group, spray.mesh],
+    detail: [mushrooms.group, rocks.mesh, holes.group, water.mesh, waterSpray.group, trail.mesh, splash.mesh, magnets.group, packets.group, glassItems.group, beeItems.group, bees.group, spray.mesh],
     restrict: capturing => terrain.limitTo(capturing, jelly.center.z, PROBE_RANGE),
   });
-  jelly.setReflectionMap(probe.texture);
+  jelly.setReflection(probe.node);
   const composite = createComposite(renderer, scene, rig.camera);
   const popups = new GrowthPopups(rig.camera);
+  const stain = new Stain();
   const alarm = new Alarm();
   alarm.steady = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const hud = new Hud();
+  const badges = new Badges();
+  const damage = new DamageNumbers();
 
   let accumulator = 0;
   let frames = 0;
@@ -155,10 +219,18 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     jelly.reset();
     merges.reset();
     alarm.reset();
+    stain.reset();
     hud.setAlarm(0, false);
     jelly.setAlarm(0);
     popups.clear();
+    damage.reset();
     trail.reset();
+    bees.reset();
+    debris.reset();
+    spikes.reset();
+    glassLevel = 0;
+    snowPath.reset();
+    interaction.reset();
     sound.reset();
     accumulator = 0;
     origin.follow(ball.z);
@@ -168,7 +240,10 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   const input = new Input(restart, () => sound.toggleMute(), () => sound.start());
   /** Where in a biome the debug jump drops the jelly: past the transition, and past the point where holes start. */
   const DEBUG_BIOME_OFFSET = 300;
+  const DEBUG_BACK_METRES = 100;
   const MAX_DEBUG_HOLE_LEVEL = 60;
+  /** Past this share of their final size, more levels change almost nothing. */
+  const HOLES_MAXED_SHAPE = 0.98;
   const jumpTo = (s: number, lateral: number, lift: number) => {
     ball.x = courseCenter(s) + lateral; ball.z = -s;
     ball.y = terrainHeight(ball.x, ball.z) + ball.radius + lift;
@@ -177,23 +252,36 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     origin.follow(ball.z);
     rig.snap(ball, origin.z);
     trail.reset();
+    snowPath.reset();
     probe.invalidate();
   };
   /** The world was drawn from the old holes: rebuild all of it now, not a chunk a frame. */
   const redrawWorld = () => {
-    terrain.invalidate(); rocks.invalidate(); mushrooms.invalidate(); holes.invalidate();
+    terrain.invalidate(); rocks.invalidate(); spikes.invalidate(); cave.invalidate(); mushrooms.invalidate(); holes.invalidate(); water.invalidate();
     present(Number.POSITIVE_INFINITY, 0);
     probe.invalidate();
   };
   input.onDebug = command => {
-    if ('biome' in command) {
+    if ('back' in command) {
+      const s = Math.max(0, -ball.z - DEBUG_BACK_METRES);
+      jumpTo(s, ball.x - courseCenter(-ball.z), 0);
+      hud.toast(`Debug: back to ${Math.round(s)} m`);
+      redrawWorld();
+    } else if ('marble' in command) {
+      grantGlass(ball);
+      hud.toast('Debug: glass marble');
+    } else if ('bee' in command) {
+      const added = addBee(ball.flock, ball.x + 1, ball.y + 1, ball.z);
+      hud.toast(added ? `Debug: bee added (${ball.flock.count})` : `Debug: the flock is full (${BEE_MAX})`);
+    } else if ('biome' in command) {
       const loop = loopOfStretch(biomeStretch(-ball.z));
       jumpTo((loop * BIOME_COUNT + command.biome) * BIOME_LENGTH + DEBUG_BIOME_OFFSET, 0, 0);
-      hud.toast(`Debug: ${BIOMES[command.biome].name}, loop ${loop + 1}`);
+      hud.toast(`Debug: ${BIOMES[BIOME_ORDER[command.biome]].name}, loop ${loop + 1}`);
       redrawWorld();
     } else {
       setHazardLevelBias(Math.min(MAX_DEBUG_HOLE_LEVEL, Math.max(-MAX_DEBUG_HOLE_LEVEL, hazardLevelBias() + command.holes)));
-      hud.toast(`Debug: holes level ${hazardLevelBias() >= 0 ? '+' : ''}${hazardLevelBias()}`);
+      const maxed = hazardShape(-ball.z) >= HOLES_MAXED_SHAPE;
+      hud.toast(`Debug: holes level ${hazardLevelBias() >= 0 ? '+' : ''}${hazardLevelBias()}${maxed ? ' (holes are as big as they get here)' : ''}`);
       redrawWorld();
     }
   };
@@ -213,39 +301,60 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   if (coarse) touch.show();
 
   /** Stream the world around the ball and pose everything in render space. */
+  const cost: Record<string, number> = {};
+  const sums: Record<string, number> = {};
+  const tally = (name: string, ms: number) => { cost[name] = Math.max(cost[name] ?? 0, ms); sums[name] = (sums[name] ?? 0) + ms; };
+  const timed = (name: string, work: () => void) => { const t0 = performance.now(); work(); tally(name, performance.now() - t0); };
   const present = (chunkBudget: number, dt: number) => {
     if (origin.follow(ball.z)) probe.invalidate();
-    sky.apply(atmosphereAt(-ball.z, air));
-    terrain.update(-ball.z, origin.z, chunkBudget);
-    rocks.update(ball.x, ball.z, origin.z);
-    holes.update(ball.x, ball.z, origin.z, ball.clock);
-    mushrooms.update(ball.x, ball.z, origin.z, ball.ledger);
+    timed('sky', () => { sky.apply(atmosphereAt(-ball.z, air)); });
+    timed('terrain', () => { terrain.update(-ball.z, origin.z, chunkBudget); });
+    timed('rocks', () => { rocks.update(ball.x, ball.z, origin.z, ball.brokenRocks); });
+    timed('holes', () => { holes.update(ball.x, ball.z, origin.z, ball.clock); });
+    // Water is held back only while the ground near the jelly is missing (after a jump somewhere new), not whenever the far
+    // end of the view is being built, which is all the time.
+    water.hold = !terrain.complete(-ball.z, WATER_NEEDS_CHUNKS_AHEAD);
+    timed('water', () => { water.update(ball.x, ball.z, origin.z, chunkBudget === Number.POSITIVE_INFINITY ? Number.POSITIVE_INFINITY : undefined); });
+    timed('spray', () => { waterSpray.update(dt, origin.z); });
+    timed('mushrooms', () => { mushrooms.update(ball.x, ball.z, origin.z, ball.ledger); });
     splash.update(origin.z, dt);
     playSeconds += dt;
-    trail.update(ball, jelly.shadowTint, origin.z, playSeconds);
+    // A glass marble leaves no slime and no snow path: it is not shedding anything.
+    trail.update(ball, jelly.shadowTint, origin.z, playSeconds, ball.glassSeconds <= 0);
+    snowPath.update(ball, SNOW_PATH_COLOR, origin.z, playSeconds, snowAt(-ball.z) >= SNOW_PATH_FROM && ball.glassSeconds <= 0);
     magnets.update(ball, origin.z, playSeconds);
     packets.update(ball, origin.z, playSeconds);
+    glassItems.update(ball.z, origin.z, ball.glassTakenSegment, false, playSeconds);
+    beeItems.frame(ball, origin.z, playSeconds);
+    timed('bees', () => { bees.update(ball, origin.z, playSeconds, dt, rig.camera.position); });
+    debris.update(origin.z, dt);
+    timed('spikes', () => { spikes.update(ball, origin.z, dt); });
+    timed('cave', () => { cave.update(ball.z, origin.z); });
     spray.update(ball.seeds, origin.z);
     lighting.magnetReach.value = ball.radius + MAGNET_RADIUS;
     lighting.magnetStrength.value = Math.min(1, ball.magnetSeconds / MAGNET_FADE_SECONDS);
     merges.update(dt);
-    jelly.update(ball, wobble, origin.z, dt, merges);
+    timed('merges+jelly', () => { jelly.update(ball, wobble, origin.z, dt, merges); });
     merges.clearCompleted();
     // The mushrooms in the middle of a merge are placed against the jelly as it is drawn this frame.
-    mushrooms.animate(merges, jelly.center, ball.seeds, origin.z);
+    timed('animate', () => { mushrooms.animate(merges, jelly.center, ball.seeds, origin.z, ball.flock); });
     lighting.ballCenter.value.copy(jelly.center);
     lighting.ballRadius.value = ball.radius;
     lighting.jellyTint.value.copy(jelly.shadowTint);
+    lighting.jellyOpacity.value = ball.snow;
   };
 
+  // How much of the screen's pixels are drawn (1 is the most the device is allowed); the benchmark below may lower it.
+  let renderScale = 1;
+  const drawResolution = () => (coarse ? MOBILE_MAX_DEVICE_PIXEL_RATIO : MAX_DEVICE_PIXEL_RATIO) * renderScale;
   let resizeQueued = 0;
   const resize = () => {
     if (resizeQueued) return;
-    resizeQueued = requestAnimationFrame(() => { resizeQueued = 0; resizeView(renderer, rig.camera, coarse ? MOBILE_MAX_DEVICE_PIXEL_RATIO : undefined); });
+    resizeQueued = requestAnimationFrame(() => { resizeQueued = 0; resizeView(renderer, rig.camera, drawResolution()); });
   };
   const resizeObserver = new ResizeObserver(resize);
   resizeObserver.observe(document.documentElement);
-  resizeView(renderer, rig.camera, coarse ? MOBILE_MAX_DEVICE_PIXEL_RATIO : undefined);
+  resizeView(renderer, rig.camera, drawResolution());
 
   stage('Warming up');
   present(Number.POSITIVE_INFINITY, 0);
@@ -257,7 +366,39 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   probe.captureNow(renderer, jelly.center);
   composite.render();
   // Compilation or submission errors must surface here, not as a black canvas later.
-  await (renderer.backend as unknown as { device: GPUDevice }).device.queue.onSubmittedWorkDone();
+  const device = (renderer.backend as unknown as { device: GPUDevice }).device;
+  await device.queue.onSubmittedWorkDone();
+
+  // Tune the water to this device: a short benchmark of the real scene, with a stretch of water and a splash in it, picks
+  // the processor intensity and the render scale this device can hold 60 fps at. (?intensity=NN skips it and sets the intensity.)
+  const forced = new URLSearchParams(location.search).get('intensity');
+  if (forced !== null && Number.isFinite(Number(forced))) {
+    waterSettings.set('intensity', Math.max(0, Math.min(100, Number(forced))));
+  } else {
+    stage('Measuring this device');
+    water.benchmark(true, ball.x, ball.y - ball.radius, ball.z, origin.z);
+    const centreX = ball.x, centreZ = ball.z, level = ball.y - ball.radius + 0.3;
+    const result = await autoTune(
+      async candidate => {
+        waterSettings.set('intensity', candidate.intensity);
+        renderScale = candidate.scale;
+        resizeView(renderer, rig.camera, drawResolution());
+        water.benchmark(true, ball.x, ball.y - ball.radius, ball.z, origin.z);
+        await new Promise(resolve => setTimeout(resolve, 30));
+      },
+      async () => {
+        const started = performance.now();
+        present(0, 1 / 60);
+        composite.render();
+        await device.queue.onSubmittedWorkDone();
+        return performance.now() - started;
+      },
+      () => interaction.splash(centreX, centreZ - 3, level, 0.9, 0, -4, 0.7, 1),
+    );
+    water.benchmark(false, 0, 0, 0, origin.z);
+    interaction.reset();
+    console.info(`[Jellyland] Water tuned for this device: intensity ${result.candidate.intensity}, render scale ${Math.round(result.candidate.scale * 100)}% (${result.medianMs.toFixed(1)} ms a frame; ${result.tried.map(t => `${t.candidate.intensity}/${Math.round(t.candidate.scale * 100)}%: ${t.medianMs.toFixed(1)} ms`).join(', ')})`);
+  }
 
   let last = performance.now();
   let stopped = false;
@@ -271,6 +412,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     if (ball.wornOut && input.jumpPressed) { restart(); input.jumpPressed = false; }
     accumulator += dt;
     let steps = 0;
+    const tPhysics = performance.now();
     while (accumulator >= PHYSICS_STEP && steps < MAX_SUBSTEPS_PER_FRAME) {
       // A tap can be pressed and released between two physics steps. The press
       // is latched by the input and fed to exactly one step, so it is never lost.
@@ -279,12 +421,14 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
       stepBall(ball, input.control, PHYSICS_STEP);
       input.control.jump = held;
       stepWobble(wobble, ball, PHYSICS_STEP);
+      stain.step(ball, PHYSICS_STEP);
       sound.step(ball);
       if (navigator.vibrate && coarse) {
         if (ball.pickupCount > 0) navigator.vibrate(MERGE_BUZZ_MS);
         else if (ball.impact > HARD_LANDING_SPEED) navigator.vibrate(HARD_LANDING_BUZZ_MS);
       }
-      if (ball.seedsSprayed) hud.toast('Seeds sown ahead: they are sprouting down the hill');
+      // Said the first time only: after that the player knows.
+      if (ball.seedsSprayed && !seedsExplained) { seedsExplained = true; hud.toast('Seeds sown ahead: they are sprouting down the hill'); }
       // Each merge: the mushroom is pulled in, droplets fly, the jelly swells where it landed, and it bloops.
       for (let i = 0; i < ball.pickupCount; i++) {
         const pickup = ball.pickups[i];
@@ -292,28 +436,98 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
         splash.spawn(pickup, ball);
         popups.spawn(pickup, jelly.center, ball.radius, now);
       }
+      for (let i = 0; i < ball.brokenCount; i++) {
+        const rock = ball.broken[i];
+        debris.burst(rock.x, rock.y, rock.z, rock.radius, rock.look, ball.vx, ball.vy, ball.vz);
+      }
+      // The cave: a knocked-over stalagmite topples; a stalactite that comes down shatters where it lands.
+      for (let i = 0; i < ball.toppledCount; i++) {
+        const down = ball.toppled[i];
+        spikes.topple(down);
+        // It breaks as it goes over: pieces fly from where it stood.
+        debris.burst(down.x, down.y + down.length * 0.3, down.z, down.radius * SPIKE_DEBRIS_SIZE, down.look, ball.vx, ball.vy, ball.vz);
+      }
+      for (let i = 0; i < ball.landedCount; i++) {
+        const landed = ball.landed[i];
+        debris.burst(landed.x, landed.y, landed.z, landed.radius * SPIKE_DEBRIS_SIZE, landed.look, 0, 0, 0);
+      }
+      if (ball.shieldUp >= 0) {
+        const level = ball.shieldLevels[ball.shieldUp];
+        hud.toast(`${BIOMES[ball.shieldUp].name} shield level ${level}: ${Math.round(SHIELD_REDUCTION[level - 1] * 100)}% less wear there`);
+      }
+      if (ball.beePicked) hud.toast(`A bee joins you (${ball.flock.count})`);
+      if (ball.flock.levelledUp) hud.toast(`Your bees are stronger: they carry ${beeCapacity(ball.flock.delivered)} now`);
       accumulator -= PHYSICS_STEP;
       steps++;
     }
+    tally('physics', performance.now() - tPhysics);
+    cost.steps = Math.max(cost.steps ?? 0, steps);
     // Catch-up is capped rather than allowed to spiral after a hitch.
     if (accumulator > PHYSICS_STEP) accumulator = 0;
     if (!Number.isFinite(ball.x + ball.y + ball.z)) throw new Error('The simulation produced a non-finite position');
 
+    const tPresent = performance.now();
     present(CHUNKS_PER_FRAME, dt);
+    tally('present', performance.now() - tPresent);
+    const lostCm = damage.step(ball.lost, dt);
+    ball.lost = 0;
+    if (lostCm > 0) popups.spawnLoss(lostCm, jelly.center, ball.radius, now);
+    timed('badges', () => { badges.update(ball, now); });
     rig.update(ball, origin.z, dt);
+    interaction.update(ball, dt);
+    timed('sim', () => { sim.update(dt); });
     input.setTilt(tilt.steer());
-    hud.update(ball, input.helpShown, dt);
+    timed('hud', () => { hud.update(ball, input.helpShown, dt); });
     alarm.update(ball.radius, ball.wornOut, dt);
     jelly.setAlarm(alarm.level);
+    jelly.setStain(stain.kind, stain.level);
+    jelly.setSnow(ball.snow);
+    const glassTarget = ball.glassSeconds > 0 ? 1 : 0, glassStep = dt / GLASS_EASE_SECONDS;
+    glassLevel = glassTarget > glassLevel ? Math.min(glassTarget, glassLevel + glassStep) : Math.max(glassTarget, glassLevel - glassStep);
+    jelly.setGlass(glassLevel);
     hud.setAlarm(alarm.level, alarm.severity > 0);
-    sound.frame(ball, dt);
+    timed('sound', () => { sound.frame(ball, dt); });
+    const tRender = performance.now();
     if (probeEnabled) probe.update(renderer, jelly.center);
-    composite.render();
+    tally('probe', performance.now() - tRender);
+    if (plain) renderer.render(scene, rig.camera); else composite.render();
+    tally('render', performance.now() - tRender);
     frames++;
   };
+  /** Draw straight to the screen, with no bloom or grade (for performance checks). */
+  let plain = false;
+  let benching = false;
   const guardedFrame = (now: number) => {
+    if (benching) return;
     try { frame(now); } catch (error) { stop(); fail(error); }
   };
+  /**
+   * The performance budget's measurement: run `count` frames one after another, each a sixtieth of a second of game, and
+   * time each from its start until the GPU has finished drawing it. That is what a frame really costs, whatever the
+   * display's refresh rate is and however the browser paces frames. Also the most each part of the CPU work took.
+   */
+  const bench = async (count: number) => {
+    benching = true;
+    for (const key of Object.keys(cost)) { delete cost[key]; delete sums[key]; }
+    const total: number[] = [], cpu: number[] = [];
+    for (let i = 0; i < count; i++) {
+      const started = performance.now();
+      frame(last + MILLISECONDS / BENCH_HZ);
+      cpu.push(performance.now() - started);
+      await device.queue.onSubmittedWorkDone();
+      total.push(performance.now() - started);
+    }
+    last = performance.now();
+    benching = false;
+    const sorted = (values: number[]) => [...values].sort((a, b) => a - b);
+    const at = (values: number[], q: number) => sorted(values)[Math.min(values.length - 1, Math.floor(q * values.length))];
+    return {
+      trace: total.map((ms, i) => [Math.round(ms * 10) / 10, Math.round(cpu[i] * 10) / 10]),
+      frames: count, medianMs: at(total, 0.5), p95Ms: at(total, 0.95), worstMs: at(total, 1), cpuMedianMs: at(cpu, 0.5), cpuWorstMs: at(cpu, 1),
+      parts: { ...cost }, means: Object.fromEntries(Object.entries(sums).map(([key, sum]) => [key, sum / count])), pixels: [renderer.domElement.width, renderer.domElement.height], s: -ball.z, biome: BIOMES[dominantBiome(-ball.z)].name,
+    };
+  };
+  const BENCH_HZ = 60;
 
   const saveOnHide = () => { if (document.hidden) hud.save(); };
   document.addEventListener('visibilitychange', saveOnHide);
@@ -323,8 +537,8 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
       throttle: input.control.throttle, steer: input.control.steer, jump: input.control.jump === true,
       squash: wobble.squash, frames,
       radius: ball.radius, merges: ball.merges, wornOut: ball.wornOut, mushroomsDrawn: mushrooms.drawn,
-      airSeconds: ball.airSeconds, magnetSeconds: ball.magnetSeconds, seedsAlive: ball.seeds.items.filter(i => i.alive).length,
-      biome: BIOMES[dominantBiome(-ball.z)].name, wear: wearScale(-ball.z), holeDepth: ball.hazardDepth, holeKind: ball.hazardKind,
+      airSeconds: ball.airSeconds, magnetSeconds: ball.magnetSeconds, glassSeconds: ball.glassSeconds, trailTriangles: bees.trailTriangles, bees: ball.flock.count, beeDelivered: ball.flock.delivered, carried: ball.flock.bees.slice(0, ball.flock.count).map(b => b.carried), shieldLevels: [...ball.shieldLevels], seedsAlive: ball.seeds.items.filter(i => i.alive).length,
+      biome: BIOMES[dominantBiome(-ball.z)].name, wear: wearScale(-ball.z), holeDepth: ball.hazardDepth, holeKind: ball.hazardKind, snow: ball.snow, spikesDown: ball.toppledSpikes.total, spikesFallen: ball.fallenSpikes.total, water: water.stats(), cost: (() => { const copy = { ...cost }; for (const key of Object.keys(cost)) delete cost[key]; return copy; })(), rippleMs: sim.lastMilliseconds + waterSpray.lastMilliseconds,
       sound: sound.state, audioContext: sound.contextState, soundsPlayed: sound.played, soundPeak: sound.loudest, muted: sound.muted, helpShown: input.helpShown,
     }),
     place: jumpTo,
@@ -340,12 +554,19 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     },
     resize: radius => { ball.radius = radius; },
     magnet: () => grantMagnet(ball),
+    bench,
+    glass: () => grantGlass(ball),
+    bee: () => { addBee(ball.flock, ball.x + 1, ball.y + 1, ball.z); },
+    shield: (kind, count) => { ball.shieldCounts[kind] = count; ball.shieldLevels[kind] = shieldLevel(count); },
     toggle: (name, on) => {
       const parts: Record<string, THREE.Object3D> = {
-        terrain: terrain.group, rocks: rocks.mesh, holes: holes.group, mushrooms: mushrooms.group, trail: trail.mesh, splash: splash.mesh,
-        magnets: magnets.group, packets: packets.group, spray: spray.mesh, jelly: jelly.group,
+        terrain: terrain.group, rocks: rocks.mesh, holes: holes.group, mushrooms: mushrooms.group, trail: trail.mesh, snowPath: snowPath.mesh, splash: splash.mesh,
+        magnets: magnets.group, packets: packets.group, glass: glassItems.group, beeItems: beeItems.group, bees: bees.group, spray: spray.mesh, jelly: jelly.group,
       };
       if (name === 'probe') { probeEnabled = on; return; }
+      if (name === 'bloom') { plain = !on; return; }
+      if (name === 'ripples') { interaction.enabled = on; return; }
+      if (name === 'water') { water.off = !on; return; }
       if (!parts[name]) throw new Error(`unknown part ${name}`);
       parts[name].visible = on;
     },
@@ -386,7 +607,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
 
   function dispose() {
     stop();
-    composite.dispose(); probe.dispose(); terrain.dispose(); rocks.dispose(); holes.dispose(); mushrooms.dispose(); splash.dispose(); popups.dispose(); trail.dispose(); magnets.dispose(); packets.dispose(); spray.dispose(); jelly.dispose();
+    composite.dispose(); probe.dispose(); terrain.dispose(); rocks.dispose(); holes.dispose(); mushrooms.dispose(); splash.dispose(); popups.dispose(); badges.dispose(); trail.dispose(); snowPath.dispose(); sim.dispose(); water.dispose(); waterSpray.dispose(); magnets.dispose(); packets.dispose(); glassItems.dispose(); debris.dispose(); spikes.dispose(); cave.dispose(); beeItems.dispose(); bees.dispose(); spray.dispose(); jelly.dispose();
     for (const maps of ground) for (const map of Object.values(maps)) map?.dispose();
     environment.dispose();
     renderer.domElement.remove();

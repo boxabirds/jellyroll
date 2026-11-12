@@ -17,6 +17,8 @@ const PENUMBRA_PER_METRE = 0.12;
 const SHADOW_FADE_DISTANCE = 30;
 /** How much jelly-coloured light makes it through the body. */
 const SHADOW_TRANSMISSION = 0.34;
+/** A snow-packed jelly is opaque: it casts a plain soft shadow, this bright, with some light scattered round its edge, and no coloured light or focus through it. */
+const OPAQUE_SHADOW_LIGHT = 0.16;
 /** Focused light in the middle of the shadow: size (radii) and brightness. */
 const CAUSTIC_RADIUS = 0.34;
 const CAUSTIC_GAIN = 1.1;
@@ -39,6 +41,9 @@ export type GroundLighting = {
   readonly ballRadiusNode: Node<'float'>;
   /** Follows the mix of colours the jelly has absorbed. */
   readonly jellyTint: { value: THREE.Color };
+  /** 0 (clear jelly) to 1 (opaque with packed snow): how little light gets through the body. */
+  readonly jellyOpacity: { value: number };
+  readonly jellyOpacityNode: Node<'float'>;
   /** Reach of an active magnet from the jelly's centre, and how strongly to draw it (0 when off). */
   readonly magnetReach: { value: number };
   readonly magnetStrength: { value: number };
@@ -52,6 +57,7 @@ export function createGroundLighting(toLight: THREE.Vector3, jellyTint: THREE.Co
   const ballCenterNode = uniform(new THREE.Vector3());
   const ballRadiusNode = uniform(START_RADIUS);
   const jellyTintNode = uniform(jellyTint.clone());
+  const jellyOpacityNode = uniform(0);
   const magnetReachNode = uniform(1);
   const magnetStrengthNode = uniform(0);
   return {
@@ -63,6 +69,8 @@ export function createGroundLighting(toLight: THREE.Vector3, jellyTint: THREE.Co
     ballRadius: ballRadiusNode,
     ballRadiusNode: ballRadiusNode as unknown as Node<'float'>,
     jellyTint: jellyTintNode,
+    jellyOpacity: jellyOpacityNode,
+    jellyOpacityNode: jellyOpacityNode as unknown as Node<'float'>,
     ballCenterNode: ballCenterNode as unknown as Node<'vec3'>,
     toLightNode: uniform(toLight.clone()) as unknown as Node<'vec3'>,
     jellyTintNode: jellyTintNode as unknown as Node<'color'>,
@@ -82,8 +90,11 @@ export function shadeUnderJelly(albedo: Node<'vec3'>, lighting: GroundLighting):
     .oneMinus().mul(step(0, along)).mul(fade);
   const tint = vec3(lighting.jellyTintNode);
   const focus = miss.div(radius.mul(CAUSTIC_RADIUS));
-  const caustic = exp(focus.mul(focus).negate()).mul(CAUSTIC_GAIN);
-  const transmitted = tint.mul(float(SHADOW_TRANSMISSION).add(caustic));
+  const opacity = lighting.jellyOpacityNode;
+  // Clear jelly passes its own coloured light and focuses it; packed snow blocks it, leaving a plain shadow.
+  const caustic = exp(focus.mul(focus).negate()).mul(CAUSTIC_GAIN).mul(opacity.oneMinus());
+  const clear = tint.mul(float(SHADOW_TRANSMISSION).add(caustic));
+  const transmitted = mix(clear, vec3(OPAQUE_SHADOW_LIGHT), opacity);
   const gap = toBall.length().sub(radius);
   const contact = smoothstep(0, radius.mul(CONTACT_REACH), gap).oneMinus().mul(CONTACT_STRENGTH);
   const shaded = albedo.mul(mix(vec3(1), transmitted, shadow)).mul(contact.oneMinus());

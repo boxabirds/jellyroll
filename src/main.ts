@@ -13,11 +13,13 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="stat optional"><span id="air">0.0 s</span><label>air time</label></div>
     <div class="stat"><span id="size">– cm</span><label>jelly</label></div>
     <div class="stat optional"><span id="merges">0</span><label>merged</label></div>
+    <div class="stat optional"><span id="snow">0%</span><label>snow</label></div>
     <div class="stat optional"><span id="best">0 m</span><label>best</label></div>
   </aside>
   <div id="biome-banner" class="biome-banner" role="status" aria-live="polite"><b id="biome-banner-name"></b><span id="biome-banner-wear"></span></div>
   <div id="alarm" class="alarm" aria-hidden="true"></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="warning" class="warning" role="alert"></div>
   <div id="magnet" class="power-up" role="status" aria-live="polite"><span class="power-up-icon" aria-hidden="true"></span>magnet <b id="magnet-seconds">0.0 s</b></div>
   <footer id="hints" class="hints" aria-label="Keyboard controls">
     <span><kbd>W</kbd> faster</span><span><kbd>S</kbd> slower</span>

@@ -6,7 +6,9 @@
 import * as THREE from 'three/webgpu';
 import type { Ball } from '../game/physics.ts';
 import { createSeedPacket, seedPacketInSegment, seedPacketSegment } from '../game/seed-packets.ts';
-import { SEED_PACKET_SPACING } from '../game/tuning.ts';
+import { BIOME_COUNT, dominantBiome } from '../game/biomes.ts';
+import { SEED_FAR, SEED_NEAR, SEED_PACKET_SPACING } from '../game/tuning.ts';
+import { createSeedIconKit, type SeedIconKit } from './seed-icons.ts';
 import { VIEW_DISTANCE } from './terrain-mesh.ts';
 
 /** Enough to cover everything in view: one per slot out to the drawing distance, and one spare. */
@@ -14,8 +16,6 @@ const POOL = Math.ceil(VIEW_DISTANCE / SEED_PACKET_SPACING) + 1;
 const PAPER_COLOR = '#f6ecd2';
 const FLAP_COLOR = '#e2d2a6';
 const LABEL_COLOR = '#43a047';
-const SEED_COLOR = '#b9722f';
-const LEAF_COLOR = '#9be06a';
 const PAPER_ROUGHNESS = 0.8;
 const GLOW = 0.22;
 const SPIN_RATE = 1.3;
@@ -27,10 +27,18 @@ const SIZE = 1.9;
 const BODY = [0.8, 1.1, 0.1] as const;
 const FLAP = [0.84, 0.16, 0.16] as const;
 const LABEL = [0.62, 0.52, 0.02] as const;
-const SEED_SEGMENTS = 14;
+/** The label's picture: its size relative to the model's own, and how far it stands off the label. */
+const ICON_SCALE = 1.25;
+const ICON_LIFT = 0.04;
+/** Where the seeds land, on average, ahead of the packet: the biome there is what they grow into. */
+const LANDING_AHEAD = (SEED_NEAR + SEED_FAR) / 2;
 
-function createPacket(paper: THREE.Material, flap: THREE.Material, label: THREE.Material, seed: THREE.Material, leaf: THREE.Material) {
+/** Each packet: the group, and for each biome the little picture of what it grows (one of them shown at a time). */
+type Packet = THREE.Group & { userData: { icons: THREE.Group[][] } };
+
+function createPacket(paper: THREE.Material, flap: THREE.Material, label: THREE.Material, icons: SeedIconKit): Packet {
   const group = new THREE.Group();
+  const shown: THREE.Group[][] = Array.from({ length: BIOME_COUNT }, () => []);
   group.add(new THREE.Mesh(new THREE.BoxGeometry(...BODY), paper));
   const top = new THREE.Mesh(new THREE.BoxGeometry(...FLAP), flap);
   top.position.y = BODY[1] / 2;
@@ -39,16 +47,18 @@ function createPacket(paper: THREE.Material, flap: THREE.Material, label: THREE.
   for (const face of [1, -1]) {
     const panel = new THREE.Mesh(new THREE.BoxGeometry(...LABEL), label);
     panel.position.set(0, -0.08, face * (BODY[2] / 2 + LABEL[2] / 2));
-    const kernel = new THREE.Mesh(new THREE.SphereGeometry(0.11, SEED_SEGMENTS, SEED_SEGMENTS), seed);
-    kernel.scale.set(0.8, 1.15, 0.45);
-    kernel.position.set(0, -0.18, face * (BODY[2] / 2 + LABEL[2] + 0.02));
-    const sprout = new THREE.Mesh(new THREE.SphereGeometry(0.09, SEED_SEGMENTS, SEED_SEGMENTS), leaf);
-    sprout.scale.set(1.3, 0.55, 0.3);
-    sprout.position.set(0.07, 0.0, face * (BODY[2] / 2 + LABEL[2] + 0.02));
-    sprout.rotation.z = 0.5;
-    group.add(panel, kernel, sprout);
+    group.add(panel);
+    for (let kind = 0; kind < BIOME_COUNT; kind++) {
+      const icon = icons.make(kind);
+      icon.scale.setScalar(ICON_SCALE);
+      icon.position.set(0, -0.08, face * (BODY[2] / 2 + LABEL[2] + ICON_LIFT));
+      icon.visible = false;
+      group.add(icon);
+      shown[kind].push(icon);
+    }
   }
-  const holder = new THREE.Group();
+  const holder = new THREE.Group() as Packet;
+  holder.userData.icons = shown;
   holder.add(group);
   group.rotation.z = TILT;
   holder.scale.setScalar(SIZE);
@@ -57,20 +67,19 @@ function createPacket(paper: THREE.Material, flap: THREE.Material, label: THREE.
 
 export class SeedPacketItems {
   readonly group = new THREE.Group();
-  private readonly items: THREE.Group[] = [];
+  private readonly items: Packet[] = [];
   private readonly packet = createSeedPacket();
   private readonly materials = [
     new THREE.MeshStandardNodeMaterial({ color: PAPER_COLOR, roughness: PAPER_ROUGHNESS }),
     new THREE.MeshStandardNodeMaterial({ color: FLAP_COLOR, roughness: PAPER_ROUGHNESS }),
     new THREE.MeshStandardNodeMaterial({ color: LABEL_COLOR, roughness: PAPER_ROUGHNESS }),
-    new THREE.MeshStandardNodeMaterial({ color: SEED_COLOR, roughness: 0.5 }),
-    new THREE.MeshStandardNodeMaterial({ color: LEAF_COLOR, roughness: 0.5 }),
   ] as const;
+  private readonly icons: SeedIconKit = createSeedIconKit();
 
   constructor() {
     for (const material of this.materials) material.emissive.copy(material.color).multiplyScalar(GLOW);
     for (let i = 0; i < POOL; i++) {
-      const item = createPacket(...this.materials);
+      const item = createPacket(...this.materials, this.icons);
       this.items.push(item);
       this.group.add(item);
     }
@@ -86,11 +95,15 @@ export class SeedPacketItems {
       if (!item.visible) continue;
       item.position.set(this.packet.x, this.packet.y + Math.sin(time * BOB_RATE + segment) * BOB_HEIGHT, this.packet.z - originZ);
       item.rotation.y = time * SPIN_RATE + segment;
+      // The label shows what these seeds grow into where they will land.
+      const grows = dominantBiome(-this.packet.z + LANDING_AHEAD);
+      item.userData.icons.forEach((faces, kind) => { for (const icon of faces) icon.visible = kind === grows; });
     }
   }
 
   dispose() {
     this.group.traverse(object => { if (object instanceof THREE.Mesh) object.geometry.dispose(); });
     for (const material of this.materials) material.dispose();
+    for (const material of this.icons.materials) material.dispose();
   }
 }

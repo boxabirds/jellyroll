@@ -2,6 +2,7 @@
  * Follows the jelly from behind and above. All smoothing is done in world
  * coordinates; the render origin is only subtracted when the camera is posed.
  */
+import { ceilingHeight, insideCave } from '../game/cave.ts';
 import * as THREE from 'three/webgpu';
 import { clamp } from '../game/noise.ts';
 import type { Ball } from '../game/physics.ts';
@@ -45,6 +46,9 @@ const MIN_SCALE = 0.4;
  */
 const MAX_TRAIL = 1.5;
 
+/** The camera keeps this far below the cave's roof. */
+const ROOF_CLEARANCE = 2;
+
 export class ChaseCamera {
   readonly camera = new THREE.PerspectiveCamera(FOV_SLOW, 1, NEAR, FAR);
   private headingX = 0;
@@ -65,6 +69,7 @@ export class ChaseCamera {
     this.x = ball.x - this.headingX * distance;
     this.z = ball.z - this.headingZ * distance;
     this.y = Math.max(ball.y + height, terrainHeight(this.x, this.z) + GROUND_CLEARANCE);
+    this.underRoof();
     this.pose(ball, originZ);
   }
 
@@ -89,7 +94,15 @@ export class ChaseCamera {
     // The same limit vertically, for long falls.
     this.y = Math.min(Math.max(this.y, ball.y + height - distance * MAX_TRAIL), ball.y + height + distance * MAX_TRAIL);
     this.y = Math.max(this.y, terrainHeight(this.x, this.z) + GROUND_CLEARANCE);
+    this.underRoof();
     this.pose(ball, originZ);
+  }
+
+  /** In the cave the camera stays under the roof (and still above the ground, which matters more). */
+  private underRoof() {
+    if (!insideCave(-this.z)) return;
+    const ground = terrainHeight(this.x, this.z) + GROUND_CLEARANCE;
+    this.y = Math.max(ground, Math.min(this.y, ceilingHeight(this.x, -this.z) - ROOF_CLEARANCE));
   }
 
   private aim(ball: Ball, blend: number) {

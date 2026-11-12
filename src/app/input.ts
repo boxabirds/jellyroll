@@ -11,13 +11,16 @@ const MUTE_KEY = 'KeyM';
 /** Help is asked for by the character typed, wherever "?" lives on the keyboard. */
 const HELP_CHARACTER = '?';
 const CLOSE_HELP_KEY = 'Escape';
-/** Debug: the digits 1 to 5 jump to that biome; - and = make the holes smaller and bigger. */
-const BIOME_KEYS = /^[1-5]$/;
+/** Debug: the digits 1 to 6 jump to that biome; - and = make the holes smaller and bigger; B adds a bee; G turns the jelly into a glass marble; comma goes back 100 metres. */
+const BEE_KEY = 'b';
+const MARBLE_KEY = 'g';
+const BACK_KEY = ',';
+const BIOME_KEYS = /^[1-6]$/;
 const HOLES_SMALLER_KEY = '-';
 const HOLES_BIGGER_KEYS = ['=', '+'];
 const HANDLED_KEYS = new Set<string>([...ACCELERATE_KEYS, ...DECELERATE_KEYS, ...LEFT_KEYS, ...RIGHT_KEYS, JUMP_KEY, RESTART_KEY, MUTE_KEY]);
 
-export type DebugCommand = { biome: number } | { holes: number };
+export type DebugCommand = { biome: number } | { holes: number } | { bee: true } | { marble: true } | { back: true };
 
 export class Input {
   /** Mutated in place; the physics step reads it directly. */
@@ -63,6 +66,9 @@ export class Input {
     }
     if (!event.repeat) {
       if (BIOME_KEYS.test(event.key)) { this.onDebug({ biome: Number(event.key) - 1 }); return; }
+      if (event.key.toLowerCase() === BEE_KEY) { this.onDebug({ bee: true }); return; }
+      if (event.key.toLowerCase() === MARBLE_KEY) { this.onDebug({ marble: true }); return; }
+      if (event.key === BACK_KEY) { this.onDebug({ back: true }); return; }
       if (event.key === HOLES_SMALLER_KEY) { this.onDebug({ holes: -1 }); return; }
       if (HOLES_BIGGER_KEYS.includes(event.key)) { this.onDebug({ holes: 1 }); return; }
     }

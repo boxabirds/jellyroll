@@ -4,11 +4,10 @@
  * after the start). Each time the event happens one variant is chosen at
  * random, then nudged in pitch, so repeats are never identical.
  *
- * Events with no recipe here (the jump, the magnet, the seed packet and the
- * lava ember) still use the synthesised sounds in sfx-sounds.ts, and so do the
+ * Events with no recipe here (the jump, the magnet and the seed packet) still use the synthesised sounds in sfx-sounds.ts, and so do the
  * holes' sounds until their files have loaded.
  */
-import { DUNES, ICE, MEADOW, SCREE } from '../game/biomes.ts';
+import { CAVE, DUNES, ICE, LAVA, MEADOW, SCREE } from '../game/biomes.ts';
 
 export type SampleLayer = { readonly file: string; readonly rate: number; readonly gain: number; readonly delay: number };
 export type SampleVariant = readonly SampleLayer[];
@@ -32,6 +31,7 @@ const SNOW = (n: number) => IMPACT(`footstep_snow_00${n}`);
 const GRASS = (n: number) => IMPACT(`footstep_grass_00${n}`);
 const GLASS_IMPACTS = ['impactGlass_light_000', 'impactGlass_light_002', 'impactGlass_medium_000', 'impactGlass_medium_001'];
 const GLASS_TONES = ['glass_001', 'glass_003', 'glass_005'];
+const GLASS_HEAVY_NAME = (n: number) => IMPACT(`impactGlass_heavy_00${n}`);
 
 /** Jelly mushroom: a wet pop. Three layered combinations. */
 const MUSHROOM: readonly SampleVariant[] = [
@@ -58,8 +58,23 @@ const CRYSTAL: readonly SampleVariant[] = [
   [layer(IMPACT('impactGlass_light_000')), layer(INTERFACE('glass_003'), 1, 0.6, 0.02)],
 ];
 
+/** Ember: a thick blob of molten stuff, so slowed down: heavy mud and slime with a deep bubble under them. */
+const EMBER: readonly SampleVariant[] = [
+  [layer(MUD(12), 0.78), layer(BUBBLE_2, 0.75, 0.6, 0.05)],
+  [layer(MUD(7), 0.8), layer(SLIME_3, 0.78, 0.7, 0.02)],
+  [layer(MUD(3), 0.76), layer(SQUISH_3, 0.78, 0.6, 0.03), layer(IMPACT('impactSoft_heavy_000'), 0.8, 0.35)],
+  [layer(SLIME_3, 0.75), layer(BUBBLE_2, 0.78, 0.7, 0.06)],
+];
+
+/** Ore: the crystal's glass, played lower and with a heavy glass knock under it, so it is weightier. */
+const ORE: readonly SampleVariant[] = [
+  [layer(IMPACT('impactGlass_medium_000'), 0.8), layer(INTERFACE('glass_001'), 0.75, 0.6, 0.02)],
+  [layer(IMPACT('impactGlass_medium_001'), 0.78), layer(INTERFACE('glass_005'), 0.8, 0.55, 0.02)],
+  [layer(GLASS_HEAVY_NAME(0), 0.9, 0.9), layer(INTERFACE('glass_003'), 0.72, 0.6, 0.03)],
+];
+
 const MERGE_VARIANTS: Record<number, readonly SampleVariant[]> = {
-  [MEADOW]: MUSHROOM, [ICE]: SNOWBALL, [DUNES]: CACTUS, [SCREE]: CRYSTAL,
+  [MEADOW]: MUSHROOM, [ICE]: SNOWBALL, [DUNES]: CACTUS, [SCREE]: ORE, [LAVA]: EMBER, [CAVE]: CRYSTAL,
 };
 
 /** The recipes for a kind of collectible merging, or undefined if that kind has no recorded sound. */
@@ -88,7 +103,7 @@ const SPLASH_NUMBERS = [2, 3, 6, 8, 12, 13, 14];
 const WATER_BUBBLE = (n: number) => `oga-water-slime-bubble_${String(n).padStart(2, '0')}.ogg`;
 const STEAM = (n: number) => `oga-steam-hiss_${n}.ogg`;
 const CRACKLE = 'oga-fire-crackle.ogg';
-const GLASS_HEAVY = (n: number) => IMPACT(`impactGlass_heavy_00${n}`);
+const GLASS_HEAVY = GLASS_HEAVY_NAME;
 
 /** Falling into a pond or an oasis: any of seven real splashes, a few with a deep plunge under them. */
 const SPLASH_VARIANTS: readonly SampleVariant[] = [
@@ -131,10 +146,28 @@ export function holeVariants(sound: HoleSound): readonly SampleVariant[] {
   return HOLE_VARIANTS[sound];
 }
 
+// --- The glass marble ----------------------------------------------------------
+/** The marble rolling: a steady four seconds of stone sliding on stone, cross-faded so it loops. Not a recipe: it is a loop. */
+export const MARBLE_ROLL_FILE = 'freesound-stone-sliding-loop.ogg';
+/** The marble colliding: one real rock hit, two octaves down (the file is already shifted), so it lands like a boulder. */
+const MARBLE_HIT_VARIANTS: readonly SampleVariant[] = [one('oga-bfh1-rock_hit_01-down2.ogg')];
+
+/** A rock the marble smashes: the sound of a real rock breaking (heard on top of the hit). */
+const MARBLE_BREAK_VARIANTS: readonly SampleVariant[] = [one('oga-rockbreak-rock_break.ogg')];
+
+export function marbleBreakVariants(): readonly SampleVariant[] {
+  return MARBLE_BREAK_VARIANTS;
+}
+
+export function marbleHitVariants(): readonly SampleVariant[] {
+  return MARBLE_HIT_VARIANTS;
+}
+
 /** Every file the recipes use, once each. */
 export function allSampleFiles(): string[] {
   const files = new Set<string>();
-  const sets = [...Object.values(MERGE_VARIANTS), LAND_SOFT, LAND_HARD, ...Object.values(HOLE_VARIANTS)];
+  const sets = [...Object.values(MERGE_VARIANTS), LAND_SOFT, LAND_HARD, MARBLE_HIT_VARIANTS, MARBLE_BREAK_VARIANTS, ...Object.values(HOLE_VARIANTS)];
   for (const set of sets) for (const variant of set) for (const item of variant) files.add(item.file);
+  files.add(MARBLE_ROLL_FILE);
   return [...files];
 }

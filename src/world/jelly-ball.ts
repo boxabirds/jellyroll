@@ -11,9 +11,10 @@
  * becomes a mix of everything it has eaten.
  */
 import * as THREE from 'three/webgpu';
-import { attribute, float, mix, smoothstep, uniform, varying, vec3 } from 'three/tsl';
+import { attribute, float, mix, mx_noise_float, smoothstep, uniform, varying, vec3 } from 'three/tsl';
 import type Node from 'three/src/nodes/core/Node.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { CAVE, DUNES, ICE, LAVA, MEADOW } from '../game/biomes.ts';
 import { dentDepth, unionRadius } from '../game/merge-timeline.ts';
 import type { Merge, Merges } from '../game/merges.ts';
 import type { Ball, Pickup } from '../game/physics.ts';
@@ -74,6 +75,31 @@ const ALARM_TINT = new THREE.Color('#ff6b6b');
 const ALARM_DEEP_SHARE = 0.85;
 const ALARM_TINT_SHARE = 0.7;
 const ALARM_GLOW = 0.9;
+/** What each hole leaves on the jelly, by the biome whose hole it is: the body colour it is pulled toward, its tint, and a glow. */
+const STAIN_DEEP_SHARE = 0.85;
+const STAIN_TINT_SHARE = 0.75;
+/** The snow coat: the body is pulled toward this white, and glows a little so it reads as opaque snow. */
+const SNOW_TINT = new THREE.Color('#ffffff');
+const SNOW_DEEP = new THREE.Color('#e9f1ff');
+/** Snow settles in patches that spread as the coat grows; this is the size of the patches (on the unit sphere) and how far one runs ahead of another. */
+const SNOW_PATCH_SCALE = 2.4;
+const SNOW_PATCH_SPREAD = 1.3;
+const SNOW_PATCH_EDGE = 0.3;
+const SNOW_TINT_SHARE = 0.9;
+const SNOW_DEEP_SHARE = 0.85;
+const SNOW_GLOW = 0.12;
+/** The glass marble: nearly clear with a cool tint (how far the body's colour is pulled to it), and how much of the wobble it keeps (none at 1). */
+const GLASS_TINT = new THREE.Color('#d8efff');
+const GLASS_TINT_SHARE = 0.8;
+const GLASS_DEEP_SHARE = 0.72;
+const GLASS_RIGIDITY = 1;
+const STAINS: Record<number, { deep: THREE.Color; tint: THREE.Color; glow: number }> = {
+  [MEADOW]: { deep: new THREE.Color('#1f6fe0'), tint: new THREE.Color('#7cc0ff'), glow: 0.05 },
+  [DUNES]: { deep: new THREE.Color('#1f6fe0'), tint: new THREE.Color('#7cc0ff'), glow: 0.05 },
+  [ICE]: { deep: new THREE.Color('#f4f8ff'), tint: new THREE.Color('#ffffff'), glow: 0.25 },
+  [LAVA]: { deep: new THREE.Color('#e0200a'), tint: new THREE.Color('#ff6a3a'), glow: 0.8 },
+  [CAVE]: { deep: new THREE.Color('#12b8c8'), tint: new THREE.Color('#7ff0ff'), glow: 0.5 },
+};
 /** Per active merge: centre offset x, y, z, its square, the union sphere radius, blend radius, dent depth, dent direction x, y, z. */
 const BLEND_STRIDE = 11;
 /** Angular spread of a lump: larger is broader. */
@@ -135,6 +161,15 @@ export class JellyBall {
   private readonly radius = uniform(START_RADIUS);
   /** 0..1: how strongly the body is flushed red (the critically-low warning). */
   private readonly alarm = uniform(0);
+  /** 0..1: how strongly the body carries a stain from a hole, and which colours (see STAINS). */
+  private readonly stain = uniform(0);
+  private readonly stainDeep = uniform(new THREE.Color());
+  private readonly stainTint = uniform(new THREE.Color());
+  private readonly stainGlow = uniform(0);
+  /** 0..1: how much snow the jelly has packed on. */
+  private readonly snow = uniform(0);
+  /** 0..1: how much of a glass marble the jelly is (the glass power-up). */
+  private readonly glass = uniform(0);
   private readonly baseDeep = new THREE.Color();
   private readonly baseTint = new THREE.Color();
   private readonly bodyFromWorld = new THREE.Matrix3();
@@ -154,7 +189,6 @@ export class JellyBall {
     const geometry = mergeVertices(sphere);
     sphere.dispose();
     const position = geometry.attributes.position as THREE.BufferAttribute;
-    position.setUsage(THREE.DynamicDrawUsage);
     this.positions = position.array as Float32Array;
     this.directions = Float32Array.from(this.positions);
     for (let i = 0; i < this.directions.length; i += 3) {
@@ -163,7 +197,7 @@ export class JellyBall {
     }
     geometry.setAttribute('restDirection', new THREE.BufferAttribute(this.directions, 3));
     geometry.computeVertexNormals();
-    (geometry.attributes.normal as THREE.BufferAttribute).setUsage(THREE.DynamicDrawUsage);
+    (geometry.attributes.normal as THREE.BufferAttribute);
 
     this.material = this.createMaterial();
     this.body = new THREE.Mesh(geometry, this.material);
@@ -195,8 +229,30 @@ export class JellyBall {
     this.alarm.value = level;
   }
 
-  setReflectionMap(texture: THREE.Texture) {
-    if (this.material.envMap !== texture) { this.material.envMap = texture; this.material.needsUpdate = true; }
+  /** @param kind the biome whose hole left the stain, or NO_STAIN; @param level 0 (clean) to 1 (fully stained) */
+  setStain(kind: number, level: number) {
+    const look = STAINS[kind];
+    if (!look || level <= 0) { this.stain.value = 0; return; }
+    this.stain.value = level;
+    this.stainDeep.value.copy(look.deep);
+    this.stainTint.value.copy(look.tint);
+    this.stainGlow.value = look.glow;
+  }
+
+  /** @param level 0 (jelly) to 1 (a clear glass marble) */
+  setGlass(level: number) {
+    this.glass.value = level;
+  }
+
+  /** @param level 0 (clean) to 1 (a full snowball coat) */
+  setSnow(level: number) {
+    this.snow.value = level;
+  }
+
+  /** What the jelly reflects: a shader input giving the surroundings in the mirror direction (see LocalReflectionProbe.node). */
+  setReflection(node: unknown) {
+    (this.material as unknown as { envNode: unknown }).envNode = node;
+    this.material.needsUpdate = true;
   }
 
   /**
@@ -245,26 +301,29 @@ export class JellyBall {
     const blends = this.prepareBlends(merges, R);
 
     const { nx, ny, nz } = ball;
-    const axial = Math.max(MIN_AXIAL_SCALE, 1 - wobble.squash);
+    // A glass marble does not wobble: it keeps its shape.
+    const soft = 1 - GLASS_RIGIDITY * this.glass.value;
+    const squash = wobble.squash * soft;
+    const axial = Math.max(MIN_AXIAL_SCALE, 1 - squash);
     // Squashing along the normal widens the body so its volume is unchanged.
     const radial = 1 / Math.sqrt(axial);
-    const patch = R * wobble.contact * Math.max(0, PATCH_DEPTH + PATCH_PER_SQUASH * Math.max(0, wobble.squash));
+    const patch = R * wobble.contact * soft * Math.max(0, PATCH_DEPTH + PATCH_PER_SQUASH * Math.max(0, squash));
     // The body's lowest point is `axial·R` below its centre, and the patch
     // slices `patch` off that. Sink the centre so the patch sits on the ground.
     const sink = R * (1 - axial) + patch + shortfall;
     const floor = -R * axial + patch;
     const bulgeHeight = R * BULGE_HEIGHT;
-    const leanX = wobble.leanX * R, leanZ = wobble.leanZ * R;
+    const leanX = wobble.leanX * R * soft, leanZ = wobble.leanZ * R * soft;
     const [a, b, c] = this.lobes;
 
     const { directions, positions } = this;
     for (let i = 0; i < directions.length; i += 3) {
       const ux = directions[i], uy = directions[i + 1], uz = directions[i + 2];
       // Lumps from merged mushrooms push the skin out around each lobe's centre.
-      const lump = R * (1 +
+      const lump = R * (1 + soft * (
         a.bump * Math.exp((ux * a.world.x + uy * a.world.y + uz * a.world.z - 1) / BUMP_WIDTH) +
         b.bump * Math.exp((ux * b.world.x + uy * b.world.y + uz * b.world.z - 1) / BUMP_WIDTH) +
-        c.bump * Math.exp((ux * c.world.x + uy * c.world.y + uz * c.world.z - 1) / BUMP_WIDTH));
+        c.bump * Math.exp((ux * c.world.x + uy * c.world.y + uz * c.world.z - 1) / BUMP_WIDTH)));
       // Merging mushrooms: each presses a dent in, then melts into the jelly through a smooth union.
       let radius = lump;
       for (let m = 0, o = 0; m < blends; m++, o += BLEND_STRIDE) {
@@ -415,13 +474,21 @@ export class JellyBall {
     }
     // The warning: the body's colour is pulled toward red and it glows, so the whole jelly flushes with each beat.
     const alarm = this.alarm as unknown as Node<'float'>;
+    // Snow covers the jelly patch by patch, in the jelly's own frame, so the coverage rolls round with it.
+    const patch = mx_noise_float(q.mul(SNOW_PATCH_SCALE)).mul(0.5).add(0.5);
+    const snow = smoothstep(0, SNOW_PATCH_EDGE, (this.snow as unknown as Node<'float'>).mul(SNOW_PATCH_SPREAD).sub(patch)) as unknown as Node<'float'>;
+    const glass = this.glass as unknown as Node<'float'>;
+    const glassTint = vec3(GLASS_TINT.r, GLASS_TINT.g, GLASS_TINT.b);
+    const snowTint = vec3(SNOW_TINT.r, SNOW_TINT.g, SNOW_TINT.b), snowDeep = vec3(SNOW_DEEP.r, SNOW_DEEP.g, SNOW_DEEP.b);
+    const stain = this.stain as unknown as Node<'float'>;
+    const stainDeep = this.stainDeep as unknown as Node<'vec3'>, stainTint = this.stainTint as unknown as Node<'vec3'>, stainGlow = this.stainGlow as unknown as Node<'float'>;
     const redDeep = vec3(ALARM_DEEP.r, ALARM_DEEP.g, ALARM_DEEP.b), redTint = vec3(ALARM_TINT.r, ALARM_TINT.g, ALARM_TINT.b);
     return createJellyMaterial({
       radius: this.radius as unknown as Node<'float'>,
-      tint: mix(uniform(this.baseTint) as unknown as Node<'vec3'>, redTint, alarm.mul(ALARM_TINT_SHARE)) as unknown as Node<'vec3'>,
-      attenuation: mix(attenuation, redDeep, alarm.mul(ALARM_DEEP_SHARE)) as unknown as Node<'vec3'>,
-      bit, bitColor,
-      glow: glow.add(redDeep.mul(alarm).mul(ALARM_GLOW)) as unknown as Node<'vec3'>,
+      tint: mix(mix(mix(mix(uniform(this.baseTint) as unknown as Node<'vec3'>, redTint, alarm.mul(ALARM_TINT_SHARE)), stainTint, stain.mul(STAIN_TINT_SHARE)), snowTint, snow.mul(SNOW_TINT_SHARE)), glassTint, glass.mul(GLASS_TINT_SHARE)) as unknown as Node<'vec3'>,
+      attenuation: mix(mix(mix(mix(attenuation, redDeep, alarm.mul(ALARM_DEEP_SHARE)), stainDeep, stain.mul(STAIN_DEEP_SHARE)), snowDeep, snow.mul(SNOW_DEEP_SHARE)), glassTint, glass.mul(GLASS_DEEP_SHARE)) as unknown as Node<'vec3'>,
+      bit, bitColor, snow, glass, snowCoord: q,
+      glow: glow.mul(glass.oneMinus()).add(redDeep.mul(alarm).mul(ALARM_GLOW)).add(stainDeep.mul(stain).mul(stainGlow)).add(snowTint.mul(snow).mul(SNOW_GLOW)) as unknown as Node<'vec3'>,
     });
   }
 }

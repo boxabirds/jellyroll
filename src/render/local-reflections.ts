@@ -5,6 +5,7 @@
  * to a 1.2 m ball on a hillside, and the capture also suspends the scene's
  * procedural sky node so the HDR is what open directions reflect.
  */
+import { cubeTexture, reflectVector } from 'three/tsl';
 import * as THREE from 'three/webgpu';
 
 const PROBE_SIZE = 128;
@@ -17,7 +18,7 @@ const CUBE_FACES = 6;
 const MOVE_THRESHOLD = 0.6;
 const PROBE_NEAR = 0.1;
 const PROBE_FAR = 600;
-const DEFAULT_FACES_PER_FRAME = 4;
+const DEFAULT_FACES_PER_FRAME = 1;
 
 /** What the probe leaves out while it captures, to keep the four extra scene renders per frame cheap. */
 export type ProbeCulling = {
@@ -66,14 +67,21 @@ export class LocalReflectionProbe {
     this.captureTarget = new THREE.CubeRenderTarget(PROBE_SIZE, { type: THREE.HalfFloatType, format: THREE.RGBAFormat, depthBuffer: true });
     this.texture = this.target.texture;
     this.texture.colorSpace = THREE.LinearSRGBColorSpace;
-    this.texture.generateMipmaps = true;
-    this.texture.minFilter = THREE.LinearMipmapLinearFilter;
+    // Read directly, sharp, as the jelly's reflection. (It used to be given to the renderer as an environment map, which
+    // re-filters the whole cube into a blurred pyramid every time it changes: 15 to 20 ms, a dropped frame, several times a second.)
+    this.texture.generateMipmaps = false;
+    this.texture.minFilter = THREE.LinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
     this.captureTarget.texture.colorSpace = THREE.LinearSRGBColorSpace;
     this.captureTarget.texture.generateMipmaps = false;
     this.captureTarget.texture.minFilter = THREE.LinearFilter;
     this.captureTarget.texture.magFilter = THREE.LinearFilter;
     this.camera = new THREE.CubeCamera(PROBE_NEAR, PROBE_FAR, this.captureTarget);
+  }
+
+  /** The reflection as a shader input: what the probe sees in the mirror direction. Give it to a material as its `envNode`. */
+  get node() {
+    return cubeTexture(this.texture, reflectVector).rgb;
   }
 
   /** Force a fresh capture, e.g. after the render origin has been rebased. */
@@ -128,7 +136,6 @@ export class LocalReflectionProbe {
     // sub-megabyte GPU copy, so the next staged capture can begin immediately
     // without overwriting the coherent cube that PMREM will read this frame.
     renderer.copyTextureToTexture(this.captureTarget.texture, this.texture, this.copyRegion, this.copyOrigin);
-    this.texture.needsPMREMUpdate = true;
   }
 
   private withCapture(render: () => void) {

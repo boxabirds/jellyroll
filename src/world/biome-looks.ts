@@ -4,7 +4,8 @@
  * joined only by the biome's index.
  */
 import * as THREE from 'three/webgpu';
-import { BIOME_COUNT, DUNES, ICE, LAVA, MEADOW, SCREE, biomeBlend, biomeOfStretch, biomeStretch } from '../game/biomes.ts';
+import { BIOME_COUNT, BIOME_LENGTH, BIOME_ORDER, CAVE, DUNES, ICE, LAVA, MEADOW, SCREE, biomeBlend, biomeOfStretch, biomeStretch, positionOfBiome } from '../game/biomes.ts';
+import { caveStart } from '../game/cave.ts';
 
 // --- Ground -------------------------------------------------------------------
 
@@ -53,6 +54,11 @@ GROUND[SCREE] = {
 GROUND[LAVA] = {
   folder: 'ground/lava', hasEmission: true, tile: 6, meanLuma: 0.12, macroStrength: 0.4, normalStrength: 1.2,
   roughnessScale: 1, minRoughness: 0.45, tintA: [0.1, 0.07, 0.07], tintB: [0.2, 0.1, 0.08], dirt: '#1c1516', emissionGain: 2.4,
+};
+/** Cave: the scree's broken rock, nearly black: what light there is comes from the ore and the pools. */
+GROUND[CAVE] = {
+  folder: 'ground/gravel', hasEmission: false, tile: 2.5, meanLuma: 0.67, macroStrength: 0.6, normalStrength: 1.5,
+  roughnessScale: 1.1, minRoughness: 0.5, tintA: [0.2, 0.2, 0.26], tintB: [0.27, 0.23, 0.26], dirt: '#1d1c22', emissionGain: 0,
 };
 export const GROUND_LOOKS: readonly GroundLook[] = GROUND;
 
@@ -110,7 +116,9 @@ HOLES[DUNES] = { color: [0.02, 0.42, 0.4], roughness: 0.04, glow: [0, 0, 0], shi
 /** Steam vent: scorched dark rock with a dull red glow. */
 HOLES[SCREE] = { color: [0.02, 0.02, 0.022], roughness: 0.9, glow: [0.012, 0.002, 0.001], shimmerRate: 2.2, shimmerDepth: 0.5 };
 /** Lava: bright molten orange. */
-HOLES[LAVA] = { color: [0.05, 0.01, 0], roughness: 0.7, glow: [0.3, 0.03, 0], shimmerRate: 1.4, shimmerDepth: 0.4 };
+HOLES[LAVA] = { color: [0.3, 0.05, 0], roughness: 0.6, glow: [1.1, 0.22, 0.02], shimmerRate: 1.4, shimmerDepth: 0.4 };
+/** Cave pool: water that glows. */
+HOLES[CAVE] = { color: [0.01, 0.2, 0.24], roughness: 0.05, glow: [0.01, 0.12, 0.14], shimmerRate: 1.2, shimmerDepth: 0.3 };
 export const HOLE_LOOKS: readonly HoleLook[] = HOLES;
 
 // --- Light and air --------------------------------------------------------------
@@ -146,12 +154,32 @@ ATMOSPHERES[DUNES] = air('#7da7c9', '#ffd49a', '#ffc47a', 2.5, 0.62, 1.02, 0.4, 
 ATMOSPHERES[SCREE] = air('#5f6679', '#aeb2bf', '#d9deea', 0.8, 0.6, 0.98, 0.22, 0.8);
 /** Lava: night under a red sky, lit from the ground. */
 ATMOSPHERES[LAVA] = air('#1c0a10', '#a8391c', '#ff7a3c', 1.2, 0.3, 1.08, 0.2, 0.82);
+/** Cave: dark. No sky, almost no light of its own, and the dark closes in a little way off. */
+ATMOSPHERES[CAVE] = air('#020308', '#06070d', '#8fa3c8', 0.1, 0.1, 1.12, 0.12, 0.6);
+
+/** Metres inside the cave's mouth by which it is fully dark. */
+const CAVE_DARK_WITHIN = 20;
 
 /** Writes the light and air at course distance `s` into `out`, blending across a transition. */
 export function atmosphereAt(s: number, out: Atmosphere): Atmosphere {
   const stretch = biomeStretch(s);
-  const from = ATMOSPHERES[biomeOfStretch(stretch)], to = ATMOSPHERES[biomeOfStretch(stretch + 1)];
-  const t = biomeBlend(s, stretch);
+  let from = ATMOSPHERES[biomeOfStretch(stretch)], to = ATMOSPHERES[biomeOfStretch(stretch + 1)];
+  let t = biomeBlend(s, stretch);
+  // The cave's dark does not fade in over the open ground before it: it is daylight right up to the mouth, and dark
+  // within a few strides of going in (and the same at the way out).
+  if (from === ATMOSPHERES[CAVE] || to === ATMOSPHERES[CAVE]) {
+    // The cave this is nearest: the one ahead (or that it is in), unless the one just left is closer.
+    let start = caveStart(s);
+    const lap = BIOME_COUNT * BIOME_LENGTH;
+    if (s < start && s - (start - lap + BIOME_LENGTH) < start - s && start >= lap) start -= lap;
+    const end = start + BIOME_LENGTH;
+    const depth = Math.min(s - start, end - s);
+    const position = positionOfBiome(CAVE);
+    const outside = ATMOSPHERES[s < (start + end) / 2 ? BIOME_ORDER[(position + BIOME_COUNT - 1) % BIOME_COUNT] : BIOME_ORDER[(position + 1) % BIOME_COUNT]];
+    from = outside; to = ATMOSPHERES[CAVE];
+    const k = Math.min(1, Math.max(0, depth / CAVE_DARK_WITHIN));
+    t = k * k * (3 - 2 * k);
+  }
   out.zenith.copy(from.zenith).lerp(to.zenith, t);
   out.horizon.copy(from.horizon).lerp(to.horizon, t);
   out.sun.copy(from.sun).lerp(to.sun, t);
@@ -175,6 +203,7 @@ ROCKS[MEADOW] = new THREE.Color('#8d8a84');
 ROCKS[DUNES] = new THREE.Color('#b48a58');
 ROCKS[SCREE] = new THREE.Color('#5d5b60');
 ROCKS[LAVA] = new THREE.Color('#241d1f');
+ROCKS[CAVE] = new THREE.Color('#34333c');
 
 /** Colour of a rock standing at course distance `s`. */
 export function rockColorAt(s: number, out: THREE.Color): THREE.Color {

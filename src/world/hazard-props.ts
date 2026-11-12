@@ -9,9 +9,9 @@
  */
 import * as THREE from 'three/webgpu';
 import { ICE, LAVA, SCREE } from '../game/biomes.ts';
-import { createHazardSample, createHoleDisc, hazardAt, holeCellIndex, holeInCell } from '../game/hazards.ts';
+import { createHazardSample, createHoleDisc, hazardAt, holeCellIndex, holeInCell, isLiquidKind } from '../game/hazards.ts';
 import { hash2 } from '../game/noise.ts';
-import { courseCenter, courseHalfWidth, terrainHeight } from '../game/terrain.ts';
+import { courseCenter, courseHalfWidth, holeEffectAt, holeLevel, terrainHeight } from '../game/terrain.ts';
 import {
   HAZARD_CELL,
   HAZARD_VENT_DUTY,
@@ -23,6 +23,7 @@ import {
   VALLEY_HALF_WIDTH_SWING,
   WORLD_SEED,
 } from '../game/tuning.ts';
+import { createJaggedShard } from './ice-shard-geometry.ts';
 import { VIEW_DISTANCE } from './terrain-mesh.ts';
 
 const TAU = Math.PI * 2;
@@ -39,14 +40,17 @@ const CELLS_BEHIND = Math.ceil(BEHIND / HAZARD_CELL);
 const CELLS_ACROSS = Math.ceil((VALLEY_HALF_WIDTH + VALLEY_HALF_WIDTH_SWING + RIDGE_DISTANCE) / HAZARD_CELL) + 1;
 /** A prop is placed only where the ground really is this deep in a hole. */
 const PLACE_DEPTH = 0.85;
-const MAX_SHARDS = 700;
+const MAX_SHARDS = 3600;
 const MAX_PUFFS = 420;
 const MAX_BUBBLES = 320;
 
 // ice shards
-const SHARD_SIDES = 5;
-const SHARDS_BASE = 3;
-const SHARDS_PER_METRE_OF_RADIUS = 1.6;
+/** Different jagged shapes of shard, each its own instanced mesh. */
+const SHARD_SHAPES = 6;
+const SHARDS_BASE = 10;
+const SHARDS_PER_METRE_OF_RADIUS = 6;
+/** Shards are small, so they are only made this far (metres) ahead of the jelly. */
+const SHARD_AHEAD = 120;
 const SHARD_HEIGHT_MIN = 0.7;
 const SHARD_HEIGHT_RANGE = 1.1;
 const SHARD_WIDTH = 0.3;
@@ -85,14 +89,21 @@ const BUBBLE_FLATTEN = 0.55;
 type Hole = { x: number; z: number; y: number; radius: number; kind: number; seed: number; u: number; s: number };
 type Prop = { x: number; y: number; z: number; size: number; phase: number; lean: number };
 
+type Row = { shards: { shape: number; elements: number[] }[]; puffs: Prop[]; bubbles: Prop[] };
+/** Rows of holes worked out per frame as they come into range. */
+const ROWS_PER_UPDATE = 2;
+
 export class HazardProps {
   readonly group = new THREE.Group();
-  private readonly shards: THREE.InstancedMesh;
+  private readonly shards: THREE.InstancedMesh[] = [];
+  private readonly shardCounts: number[] = new Array<number>(SHARD_SHAPES).fill(0);
   private readonly puffs: THREE.InstancedMesh;
   private readonly bubbles: THREE.InstancedMesh;
   private readonly puffProps: Prop[] = [];
   private readonly bubbleProps: Prop[] = [];
-  private shardCount = 0;
+  private readonly rows = new Map<number, Row>();
+  private row: Row = { shards: [], puffs: [], bubbles: [] };
+  private rowsPerUpdate = Number.POSITIVE_INFINITY;
   private cellS = Number.NaN;
   private cellU = Number.NaN;
   private originZ = Number.NaN;
@@ -108,15 +119,12 @@ export class HazardProps {
   constructor() {
     const shardMaterial = new THREE.MeshStandardNodeMaterial({ color: SHARD_COLOR, roughness: SHARD_ROUGHNESS, metalness: 0 });
     shardMaterial.emissive.set(SHARD_COLOR).multiplyScalar(SHARD_GLOW);
-    const shardGeometry = new THREE.ConeGeometry(1, 1, SHARD_SIDES);
-    shardGeometry.translate(0, 0.5, 0);
-    this.shards = new THREE.InstancedMesh(shardGeometry, shardMaterial, MAX_SHARDS);
+    for (let shape = 0; shape < SHARD_SHAPES; shape++) this.shards.push(new THREE.InstancedMesh(createJaggedShard(shape), shardMaterial, MAX_SHARDS));
     const puffMaterial = new THREE.MeshBasicNodeMaterial({ color: PUFF_COLOR, transparent: true, opacity: PUFF_OPACITY, depthWrite: false });
     this.puffs = new THREE.InstancedMesh(new THREE.SphereGeometry(1, PUFF_SEGMENTS, PUFF_SEGMENTS), puffMaterial, MAX_PUFFS);
     const bubbleMaterial = new THREE.MeshBasicNodeMaterial({ color: BUBBLE_COLOR });
     this.bubbles = new THREE.InstancedMesh(new THREE.SphereGeometry(1, BUBBLE_SEGMENTS, BUBBLE_SEGMENTS), bubbleMaterial, MAX_BUBBLES);
-    for (const mesh of [this.shards, this.puffs, this.bubbles]) {
-      mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    for (const mesh of [...this.shards, this.puffs, this.bubbles]) {
       mesh.count = 0;
       mesh.frustumCulled = false;
       this.group.add(mesh);
@@ -127,46 +135,83 @@ export class HazardProps {
   update(worldX: number, worldZ: number, originZ: number, clock: number) {
     const s = -worldZ;
     const cellS = holeCellIndex(s), cellU = holeCellIndex(worldX - courseCenter(s));
-    if (cellS !== this.cellS || cellU !== this.cellU || originZ !== this.originZ) {
-      this.cellS = cellS; this.cellU = cellU; this.originZ = originZ;
-      this.rebuild(cellS, originZ);
+    void cellU;
+    // Each row of holes is worked out once and kept (finding where its shards, vents and bubbles stand needs the ground's
+    // height at each, which is the costly part); rows coming into range are worked out a couple a frame, nearest first.
+    let dirty = originZ !== this.originZ;
+    this.originZ = originZ;
+    if (cellS !== this.cellS) {
+      this.cellS = cellS;
+      for (const j of this.rows.keys()) if (j < cellS - CELLS_BEHIND || j > cellS + CELLS_AHEAD) this.rows.delete(j);
+      dirty = true;
     }
+    let made = 0;
+    for (let j = cellS - CELLS_BEHIND; j <= cellS + CELLS_AHEAD && made < this.rowsPerUpdate; j++) {
+      if (this.rows.has(j)) continue;
+      this.rows.set(j, this.buildRow(j));
+      made++; dirty = true;
+    }
+    this.rowsPerUpdate = ROWS_PER_UPDATE;
+    if (dirty) this.assemble(cellS, originZ);
     this.animate(originZ, clock);
   }
 
   /** Rebuild the props on the next update. */
   invalidate() {
+    this.rows.clear();
     this.cellS = Number.NaN;
+    // After a jump somewhere new everything is made at once: the world is being redrawn anyway.
+    this.rowsPerUpdate = Number.POSITIVE_INFINITY;
   }
 
   dispose() {
-    for (const mesh of [this.shards, this.puffs, this.bubbles]) {
+    for (const mesh of [...this.shards, this.puffs, this.bubbles]) {
       mesh.geometry.dispose();
       (mesh.material as THREE.Material).dispose();
     }
   }
 
-  private rebuild(cellS: number, originZ: number) {
-    const { disc, hole, matrix, position, rotation, euler, scale } = this;
-    this.shardCount = 0;
+  /** Everything standing in the holes of one row of cells, in world coordinates. */
+  private buildRow(j: number): Row {
+    const { disc, hole } = this;
+    const row: Row = { shards: [], puffs: [], bubbles: [] };
+    this.row = row;
+    // Holes sit in valley coordinates, so the cells across are counted from the valley's centre line at each distance.
+    for (let i = -CELLS_ACROSS; i <= CELLS_ACROSS; i++) {
+      if (!holeInCell(i, j, disc)) continue;
+      const kind = disc.kind;
+      if (kind !== ICE && kind !== SCREE && kind !== LAVA) continue;
+      hole.s = disc.s; hole.u = disc.u; hole.radius = disc.radius; hole.kind = kind; hole.seed = disc.seed;
+      hole.x = courseCenter(disc.s) + disc.u; hole.z = -disc.s;
+      hole.y = terrainHeight(hole.x, hole.z);
+      if (kind === ICE) this.placeShards(hole, 0, this.matrix, this.position, this.rotation, this.euler, this.scale);
+      else if (kind === SCREE) this.placePuffs(hole);
+      else this.placeBubbles(hole);
+    }
+    return row;
+  }
+
+  /** Lay the rows in range into the meshes. Shards are only drawn for the nearer rows. */
+  private assemble(cellS: number, originZ: number) {
+    this.shardCounts.fill(0);
     this.puffProps.length = 0;
     this.bubbleProps.length = 0;
-    // Holes sit in valley coordinates, so the cells across are counted from the valley's centre line at each distance.
-    for (let j = cellS - CELLS_BEHIND; j <= cellS + CELLS_AHEAD; j++) {
-      for (let i = -CELLS_ACROSS; i <= CELLS_ACROSS; i++) {
-        if (!holeInCell(i, j, disc)) continue;
-        const kind = disc.kind;
-        if (kind !== ICE && kind !== SCREE && kind !== LAVA) continue;
-        hole.s = disc.s; hole.u = disc.u; hole.radius = disc.radius; hole.kind = kind; hole.seed = disc.seed;
-        hole.x = courseCenter(disc.s) + disc.u; hole.z = -disc.s;
-        hole.y = terrainHeight(hole.x, hole.z);
-        if (kind === ICE) this.placeShards(hole, originZ, matrix, position, rotation, euler, scale);
-        else if (kind === SCREE) this.placePuffs(hole);
-        else this.placeBubbles(hole);
+    let shardCount = 0;
+    const { matrix } = this;
+    for (const [j, row] of this.rows) {
+      if ((j - cellS) * HAZARD_CELL <= SHARD_AHEAD) {
+        for (const shard of row.shards) {
+          if (shardCount >= MAX_SHARDS) break;
+          matrix.fromArray(shard.elements);
+          matrix.elements[14] -= originZ;
+          this.shards[shard.shape].setMatrixAt(this.shardCounts[shard.shape]++, matrix);
+          shardCount++;
+        }
       }
+      for (const prop of row.puffs) if (this.puffProps.length < MAX_PUFFS) this.puffProps.push(prop);
+      for (const prop of row.bubbles) if (this.bubbleProps.length < MAX_BUBBLES) this.bubbleProps.push(prop);
     }
-    this.shards.count = this.shardCount;
-    this.shards.instanceMatrix.needsUpdate = true;
+    this.shards.forEach((mesh, shape) => { mesh.count = this.shardCounts[shape]; mesh.instanceMatrix.needsUpdate = true; });
   }
 
   /** A random spot inside the hole where the ground is properly in it; false if a few tries find none. */
@@ -177,7 +222,11 @@ export class HazardProps {
       const u = hole.u + Math.cos(angle) * distance, s = hole.s + Math.sin(angle) * distance;
       const halfWidth = courseHalfWidth(s);
       if (hazardAt(u, s, halfWidth, this.sample) < PLACE_DEPTH) continue;
-      out.x = courseCenter(s) + u; out.z = -s; out.y = terrainHeight(out.x, out.z);
+      out.x = courseCenter(s) + u; out.z = -s;
+      // Liquids are only there where the ground is below the surface.
+      if (holeEffectAt(out.x, out.z, this.sample) < PLACE_DEPTH) continue;
+      // Lava bubbles break its flat surface, not the floor under it.
+      out.y = isLiquidKind(this.sample.kind) ? holeLevel(this.sample) : terrainHeight(out.x, out.z);
       return true;
     }
     return false;
@@ -187,7 +236,7 @@ export class HazardProps {
 
   private placeShards(hole: Hole, originZ: number, matrix: THREE.Matrix4, position: THREE.Vector3, rotation: THREE.Quaternion, euler: THREE.Euler, scale: THREE.Vector3) {
     const count = Math.round(SHARDS_BASE + SHARDS_PER_METRE_OF_RADIUS * hole.radius);
-    for (let n = 0; n < count && this.shardCount < MAX_SHARDS; n++) {
+    for (let n = 0; n < count; n++) {
       if (!this.spot(hole, n, 0, this.point)) continue;
       const size = hash2(n, 1, SEED_SIZE + Math.floor(hole.seed * 1e6));
       const height = SHARD_HEIGHT_MIN + SHARD_HEIGHT_RANGE * size * size;
@@ -196,7 +245,8 @@ export class HazardProps {
       position.set(this.point.x, this.point.y - height * 0.08, this.point.z - originZ);
       scale.set(SHARD_WIDTH * (0.7 + 0.6 * size), height, SHARD_WIDTH * (0.7 + 0.6 * size));
       matrix.compose(position, rotation, scale);
-      this.shards.setMatrixAt(this.shardCount++, matrix);
+      const shape = Math.floor(hash2(n, 5, SEED_LEAN + Math.floor(hole.seed * 1e6)) * SHARD_SHAPES);
+      this.row.shards.push({ shape, elements: matrix.toArray() });
     }
   }
 
@@ -204,18 +254,18 @@ export class HazardProps {
     const vents = Math.max(1, Math.round(hole.radius * PUFFS_PER_METRE_OF_RADIUS / PUFFS_PER_VENT));
     for (let v = 0; v < vents; v++) {
       if (!this.spot(hole, v, 10, this.point)) continue;
-      for (let n = 0; n < PUFFS_PER_VENT && this.puffProps.length < MAX_PUFFS; n++) {
-        this.puffProps.push({ x: this.point.x, y: this.point.y, z: this.point.z, size: PUFF_RADIUS * (0.8 + 0.4 * hash2(v, n, SEED_SIZE)), phase: n * PUFF_STAGGER, lean: hash2(v, n, SEED_LEAN) - 0.5 });
+      for (let n = 0; n < PUFFS_PER_VENT; n++) {
+        this.row.puffs.push({ x: this.point.x, y: this.point.y, z: this.point.z, size: PUFF_RADIUS * (0.8 + 0.4 * hash2(v, n, SEED_SIZE)), phase: n * PUFF_STAGGER, lean: hash2(v, n, SEED_LEAN) - 0.5 });
       }
     }
   }
 
   private placeBubbles(hole: Hole) {
     const count = Math.round(BUBBLES_BASE + BUBBLES_PER_METRE_OF_RADIUS * hole.radius);
-    for (let n = 0; n < count && this.bubbleProps.length < MAX_BUBBLES; n++) {
+    for (let n = 0; n < count; n++) {
       if (!this.spot(hole, n, 20, this.point)) continue;
       const size = hash2(n, 5, SEED_SIZE + Math.floor(hole.seed * 1e6));
-      this.bubbleProps.push({ x: this.point.x, y: this.point.y, z: this.point.z, size: BUBBLE_RADIUS_MIN + BUBBLE_RADIUS_RANGE * size, phase: hash2(n, 6, SEED_LEAN + Math.floor(hole.seed * 1e6)), lean: 0 });
+      this.row.bubbles.push({ x: this.point.x, y: this.point.y, z: this.point.z, size: BUBBLE_RADIUS_MIN + BUBBLE_RADIUS_RANGE * size, phase: hash2(n, 6, SEED_LEAN + Math.floor(hole.seed * 1e6)), lean: 0 });
     }
   }
 

@@ -45,7 +45,6 @@ export class MergeSplash {
     const material = new THREE.MeshStandardNodeMaterial({ roughness: DROPLET_ROUGHNESS, metalness: 0 });
     material.emissive.setScalar(DROPLET_GLOW);
     this.mesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, DROPLET_SEGMENTS, DROPLET_SEGMENTS), material, MAX_DROPLETS);
-    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     // Every slot needs a colour before the first draw.
     for (let i = 0; i < MAX_DROPLETS; i++) this.mesh.setColorAt(i, this.color.setScalar(1));
     this.mesh.count = 0;

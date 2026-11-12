@@ -3,7 +3,7 @@
  * stored: each cell answers from a hash whether it holds one and what it looks
  * like. The only state is the ledger of which ones the player has absorbed.
  */
-import { collectibleKind, collectibleScale, ICE, MEADOW, DUNES, SCREE, LAVA } from './biomes.ts';
+import { collectibleKind, collectibleScale, CAVE, ICE, MEADOW, DUNES, SCREE, LAVA } from './biomes.ts';
 import { createHazardSample, hazardAt } from './hazards.ts';
 import { hash2, smoothstep, valueNoise2 } from './noise.ts';
 import { courseCenter, courseHalfWidth, terrainHeight } from './terrain.ts';
@@ -49,14 +49,17 @@ export const KIND_NAMES: readonly string[] = [];
 (KIND_NAMES as string[])[MEADOW] = 'mushroom';
 (KIND_NAMES as string[])[ICE] = 'snowball';
 (KIND_NAMES as string[])[DUNES] = 'cactus';
-(KIND_NAMES as string[])[SCREE] = 'crystal';
+(KIND_NAMES as string[])[SCREE] = 'ore';
 (KIND_NAMES as string[])[LAVA] = 'ember';
+(KIND_NAMES as string[])[CAVE] = 'crystal';
 const KIND_LOOKS: readonly (readonly number[])[] = [];
 (KIND_LOOKS as number[][])[ICE] = [LOOK.classic, LOOK.classic, LOOK.glitter];
 (KIND_LOOKS as number[][])[MEADOW] = ALL_LOOKS;
 (KIND_LOOKS as number[][])[DUNES] = [LOOK.classic, LOOK.stripy, LOOK.spotty];
-(KIND_LOOKS as number[][])[SCREE] = [LOOK.classic, LOOK.glitter, LOOK.galaxy, LOOK.twoTone];
+/** Ore: plain metal, glittering metal, and the play of colour of an opal. */
+(KIND_LOOKS as number[][])[SCREE] = [LOOK.classic, LOOK.glitter, LOOK.rainbow];
 (KIND_LOOKS as number[][])[LAVA] = [LOOK.classic, LOOK.golden, LOOK.swirly];
+(KIND_LOOKS as number[][])[CAVE] = [LOOK.classic, LOOK.glitter, LOOK.galaxy, LOOK.twoTone];
 
 /** One of the looks a kind of collectible comes in, chosen by `chance` (0..1). */
 export function pickLook(kind: number, chance: number): number {

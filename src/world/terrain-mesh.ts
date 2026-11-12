@@ -4,16 +4,22 @@
  * construction; a recycled chunk just has its vertex buffers rewritten.
  */
 import * as THREE from 'three/webgpu';
-import { attribute, float, transformNormalToView, mix, normalMap, positionWorld, sin, smoothstep as smoothstepNode, texture, time, vec2, vec3 } from 'three/tsl';
+import { attribute, float, mx_noise_float, transformNormalToView, mix, normalMap, positionWorld, sin, smoothstep as smoothstepNode, texture, time, vec2, vec3 } from 'three/tsl';
 import type Node from 'three/src/nodes/core/Node.js';
-import { BIOME_COUNT, BIOME_LENGTH, biomeOfStretch, biomeStretch } from '../game/biomes.ts';
-import { createHazardSample, hazardAt, isWaterKind } from '../game/hazards.ts';
+import { BIOME_COUNT, BIOME_LENGTH, BIOME_ORDER, BIOME_TRANSITION, CAVE, biomeOfStretch, biomeStretch, caveAt } from '../game/biomes.ts';
+import { createMushroom, mushroomCellIndex, mushroomInCell } from '../game/mushrooms.ts';
+import { createHoleDisc, holeCellIndex, holeInCell } from '../game/hazards.ts';
+import { sweetColor } from '../render/colors.ts';
+import { MUSHROOM_CELL, HAZARD_CELL, VALLEY_HALF_WIDTH, VALLEY_HALF_WIDTH_SWING } from '../game/tuning.ts';
+import { createHazardSample, hazardAt, isLiquidKind } from '../game/hazards.ts';
 import { smoothstep, valueNoise1, valueNoise2 } from '../game/noise.ts';
 import { createRock, rockCellIndex, rockInCell } from '../game/rocks.ts';
-import { courseCenter, courseHalfWidth, holeLevel, kickerHeight, terrainHeight } from '../game/terrain.ts';
+import { HoleSet, collectHoles, narrowToRow, courseCenter, courseHalfWidth, holeLevel, kickerHeight, terrainHeightWith } from '../game/terrain.ts';
 import { GRADIENT_STEP, KICKER_HEIGHT, WORLD_SEED } from '../game/tuning.ts';
 import { GROUND_LOOKS, HOLE_LOOKS, type GroundLook, type GroundTextures } from './biome-looks.ts';
 import { shadeUnderJelly, type GroundLighting } from './ground-lighting.ts';
+import { RIPPLE_BY_BIOME } from './water-interaction.ts';
+import { waterSettings } from '../water/params.ts';
 
 // --- Grid -------------------------------------------------------------------
 /** Edge of one terrain quad (metres). REBASE_DISTANCE is a multiple of it. */
@@ -39,6 +45,8 @@ const CHUNK_POOL = CHUNKS_AHEAD + CHUNKS_BEHIND + 1;
 /** How far ahead the hill is drawn; the fog must close before this. */
 export const VIEW_DISTANCE = CHUNKS_AHEAD * CHUNK_LENGTH;
 const UNASSIGNED = Number.NaN;
+/** Rows of a chunk built per unit of the update budget (one unit per frame while playing). A chunk has CHUNK_ROWS + 1. */
+const ROWS_PER_BUDGET_UNIT = 5;
 
 // --- Ground material ---------------------------------------------------------
 /** Every biome's texture is also sampled this large, to break up its repeat. The origin hop is a multiple. */
@@ -46,12 +54,11 @@ const MACRO_TILE = 40;
 const GROUND_SPECULAR = 0.16;
 const LUMA_WEIGHTS = [0.2126, 0.7152, 0.0722] as const;
 /**
- * The per-vertex blend between two biomes is soft; these edges sharpen it in
- * the shader so the ground changes in patches with crisp-ish borders rather
- * than as a 200 m cross-fade.
+ * The per-vertex blend between two biomes runs across the whole transition; these edges only firm it up a little in the
+ * shader, so the ground changes in patches with soft borders but still spreads over the full BIOME_TRANSITION.
  */
-const BLEND_EDGE_FROM = 0.34;
-const BLEND_EDGE_TO = 0.66;
+const BLEND_EDGE_FROM = 0.12;
+const BLEND_EDGE_TO = 0.88;
 /** Emission-map brightness at which a vein starts to glow, and at which it glows fully. */
 const GLOW_FROM_HEAT = 0.3;
 const GLOW_FULL_HEAT = 0.75;
@@ -75,13 +82,27 @@ const WALL_SHADE_DISTANCE = 30;
 /**
  * A biome boundary is not a straight line across the valley: it wanders by
  * up to EDGE_BROAD + EDGE_FINE metres, in tongues and patches. Together with
- * EDGE_BAND that keeps the whole change inside the 200 m transition.
+ * EDGE_BAND that keeps the whole change inside the 400 m transition.
  */
 const EDGE_BROAD = 40;
 const EDGE_BROAD_WAVELENGTH = 55;
 const EDGE_FINE = 10;
 const EDGE_FINE_WAVELENGTH = 9;
-const EDGE_BAND = 50;
+/** Half the transition less the furthest a boundary wanders, so the whole change fits inside BIOME_TRANSITION. */
+const EDGE_BAND = BIOME_TRANSITION / 2 - EDGE_BROAD - EDGE_FINE;
+/** Light cast on the cave floor: by a piece of ore (strength, and how far it reaches), and by a pool (colour, and how far beyond its rim). */
+const ORE_LIGHT = 0.55;
+const ORE_LIGHT_RADIUS = 5.5;
+const POOL_LIGHT = [0.008, 0.075, 0.085] as const;
+const POOL_LIGHT_REACH = 4;
+/** Lights add up where they overlap, but only to this much, so a cluster of pools does not turn the cave to day. */
+const CAST_MAX = 0.3;
+/** Cast light shows the ground's own colour (times this) plus a little of itself, so it reads on dark rock. */
+const CAST_ALBEDO_GAIN = 3;
+const CAST_FLOOR = 0.03;
+/** At a cave mouth the ground's change of biome is centred this far outside the mouth and takes this long either side, so (with the wander of the boundary) it lies wholly outside. */
+const CAVE_BLEND_SHIFT = 110;
+const CAVE_BLEND_BAND = 40;
 /** Rock shadow patches: offset and size in rock radii, and darkness. */
 const ROCK_SHADOW_OFFSET = 0.9;
 const ROCK_SHADOW_INNER = 0.7;
@@ -110,6 +131,20 @@ const WATER_BANK_TO = 0.1;
 const HOLE_EDGE_FROM = 0.3;
 const HOLE_EDGE_TO = 0.55;
 const HALF = 0.5;
+/** Water this deep (metres) is as dark as it gets, and how much darker. */
+const WATER_DEEP_METRES = 0.5;
+const DEPTH_DARKEN = 0.45;
+/** Caustic shimmer: two layers of thin bright lines moving at different scales and rates. */
+const CAUSTIC_SCALE_A = 0.8;
+const CAUSTIC_SCALE_B = 1.6;
+const CAUSTIC_RATE_A = 0.35;
+const CAUSTIC_RATE_B = 0.5;
+const CAUSTIC_OFFSET = 13;
+const CAUSTIC_SHARPNESS = 6;
+/** Ripples per metre (times the caustic size setting) and how fast they flow (times the speed setting). */
+const CAUSTIC_WAVES = 3.2;
+const CAUSTIC_FLOW = 2.5;
+const CAUSTIC_COLOR = [0.05, 0.14, 0.14] as const;
 const SHIMMER_PER_METRE_X = 0.45;
 const SHIMMER_PER_METRE_Z = 0.33;
 
@@ -165,16 +200,34 @@ function createGroundMaterial(from: number, to: number, textures: readonly Groun
   const shimmerRate = mix(float(holeLookA.shimmerRate), float(holeLookB.shimmerRate), hole.y);
   const shimmerDepth = mix(float(holeLookA.shimmerDepth), float(holeLookB.shimmerDepth), hole.y);
   const shimmer = sin(time.mul(shimmerRate).add(shimmerPhase)).mul(shimmerDepth).add(float(1).sub(shimmerDepth.mul(HALF)));
-  const holeColor = mix(vec3(...holeLookA.color), vec3(...holeLookB.color), hole.y).mul(shimmer);
-  const albedo = mix(surface, holeColor, holeMask) as unknown as Node<'vec3'>;
+  // The bed under the water is darker the deeper it is, and light wobbles across it as caustics do; the water's own surface is drawn on top (water-surface.ts).
+  const waterDepth = hole.z.sub(positionWorld.y).div(WATER_DEEP_METRES).clamp(0, 1);
+  const rippleKind = mix(float(RIPPLE_BY_BIOME[from] ?? 0), float(RIPPLE_BY_BIOME[to] ?? 0), hole.y);
+  const holeColor = mix(vec3(...holeLookA.color), vec3(...holeLookB.color), hole.y).mul(shimmer).mul(mix(float(1), float(1).sub(waterDepth.mul(DEPTH_DARKEN)), isWater));
+  // The light that wobbles across the bed: its size, speed and strength are the water settings.
+  const causticScale = waterSettings.num('causticScale') as unknown as Node<'float'>;
+  const causticSpeed = waterSettings.num('causticSpeed') as unknown as Node<'float'>;
+  // (Two crossed sets of ripples, not noise: this runs for every pixel of ground on the screen, wet or dry, so it must be cheap.)
+  const cx = positionWorld.x.mul(causticScale.mul(CAUSTIC_WAVES)), cz = positionWorld.z.mul(causticScale.mul(CAUSTIC_WAVES)), ct = time.mul(causticSpeed.mul(CAUSTIC_FLOW));
+  const net = sin(cx.add(sin(cz.mul(0.7).add(ct)).mul(1.4))).mul(sin(cz.mul(1.1).sub(ct.mul(0.8)).add(sin(cx.mul(0.6)).mul(1.2)))).abs().oneMinus();
+  const caustics = net.pow(CAUSTIC_SHARPNESS).mul(2).mul(waterSettings.num('causticStrength') as unknown as Node<'float'>);
+  // Under water the ground is its own colour, darker the deeper it is: the water itself is a surface drawn over it (water-surface.ts), not paint.
+  const bedColor = surface.mul(float(1).sub(waterDepth.mul(DEPTH_DARKEN)));
+  // Only liquids that have a surface of their own drawn over them (water) show the bare bed; lava is still painted here, flat and glowing.
+  const hasSurface = (kind: number) => float((RIPPLE_BY_BIOME[kind] ?? 0) > 0 ? 1 : 0);
+  const surfaced = isWater.mul(mix(hasSurface(from), hasSurface(to), hole.y));
+  const albedo = mix(surface, mix(holeColor, bedColor, surfaced), holeMask) as unknown as Node<'vec3'>;
   material.colorNode = shadeUnderJelly(albedo, lighting);
   const level = transformNormalToView(vec3(0, 1, 0));
-  material.normalNode = mix(mix(a.normal, b.normal, blend), level, holeMask.mul(isWater)).normalize();
-  material.roughnessNode = mix(mix(a.roughness, b.roughness, blend), mix(float(holeLookA.roughness), float(holeLookB.roughness), hole.y), holeMask);
+  const painted = holeMask.mul(float(1).sub(surfaced));
+  material.normalNode = mix(mix(a.normal, b.normal, blend), level, painted.mul(isWater)).normalize();
+  material.roughnessNode = mix(mix(a.roughness, b.roughness, blend), mix(float(holeLookA.roughness), float(holeLookB.roughness), hole.y), painted);
   const pulse = sin(time.mul(GLOW_PULSE_RATE).add(positionWorld.x.mul(GLOW_PULSE_PER_METRE))).mul(GLOW_PULSE).add(1 - GLOW_PULSE);
   const groundGlow = textures[from].emission || textures[to].emission ? mix(a.glow, b.glow, blend).mul(pulse).mul(data.x) : vec3(0);
-  const holeGlow = mix(vec3(...holeLookA.glow), vec3(...holeLookB.glow), hole.y).mul(shimmer);
-  material.emissiveNode = mix(groundGlow, holeGlow, holeMask);
+  const holeGlow = mix(vec3(...holeLookA.glow), vec3(...holeLookB.glow), hole.y).mul(shimmer).mul(float(1).sub(surfaced)).add(vec3(...CAUSTIC_COLOR).mul(caustics).mul(isWater).mul(rippleKind));
+  // Light thrown on the ground by things that glow (the cave's ore and pools), stamped per vertex when the chunk is made.
+  const cast = attribute('glow', 'vec3') as unknown as Node<'vec3'>;
+  material.emissiveNode = mix(groundGlow, holeGlow, holeMask).add(cast.mul(surface.mul(CAST_ALBEDO_GAIN).add(CAST_FLOOR)));
   return material;
 }
 
@@ -184,6 +237,8 @@ type Chunk = {
   normals: Float32Array;
   tints: Float32Array;
   holes: Float32Array;
+  /** Light cast on each vertex by glowing things nearby (red, green, blue). */
+  glows: Float32Array;
   /** Snapped valley-centre X of each row, kept so rock shadows can find their vertices. */
   rowOriginX: Float32Array;
   /** Which stretch of the course this chunk currently shows. */
@@ -197,13 +252,22 @@ export class TerrainMesh {
   private readonly materials: THREE.MeshPhysicalNodeMaterial[];
   private readonly indexAttribute: THREE.BufferAttribute;
   private readonly rock = createRock();
+  private readonly ore = createMushroom();
+  private readonly pool = createHoleDisc();
   private readonly hole = createHazardSample();
+  /** The liquid basins that reach the chunk being filled. */
+  private readonly basins = new HoleSet();
+  /** And the ones that reach the row being filled. */
+  private readonly rowBasins = new HoleSet();
+  /** The chunk being built a few rows at a time, if any. */
+  private building: { chunk: Chunk; index: number; startS: number; boundary: number; band: number; nextBiome: number; row: number } | null = null;
   private readonly probeVisible: boolean[] = new Array<boolean>(CHUNK_POOL).fill(false);
   private readonly shadowDirectionX: number;
   private readonly shadowDirectionZ: number;
 
   constructor(textures: readonly GroundTextures[], lighting: GroundLighting, toLight: THREE.Vector3) {
-    this.materials = Array.from({ length: BIOME_COUNT }, (_, from) => createGroundMaterial(from, (from + 1) % BIOME_COUNT, textures, lighting));
+    // One per place in the course order: the biome there turning into the next one.
+    this.materials = Array.from({ length: BIOME_COUNT }, (_, position) => createGroundMaterial(BIOME_ORDER[position], BIOME_ORDER[(position + 1) % BIOME_COUNT], textures, lighting));
     // Shadows fall on the far side of a rock from the light.
     const horizontal = Math.hypot(toLight.x, toLight.z) || 1;
     this.shadowDirectionX = -toLight.x / horizontal;
@@ -220,13 +284,19 @@ export class TerrainMesh {
   update(s: number, originZ: number, budget: number) {
     const current = Math.floor(s / CHUNK_LENGTH);
     const first = current - CHUNKS_BEHIND, last = current + CHUNKS_AHEAD;
+    // A chunk is built a few rows a frame, so one is never a hitch; they are wanted well before the jelly arrives.
+    let rows = budget === Number.POSITIVE_INFINITY ? Number.POSITIVE_INFINITY : budget * ROWS_PER_BUDGET_UNIT;
     // Nearest missing stretch first, so a tight budget never leaves a hole underfoot.
-    for (let wanted = first; wanted <= last && budget > 0; wanted++) {
-      if (this.chunks.some(chunk => chunk.index === wanted)) continue;
-      const spare = this.chunks.find(chunk => !(chunk.index >= first && chunk.index <= last));
-      if (!spare) break;
-      this.fill(spare, wanted);
-      budget--;
+    while (rows > 0) {
+      if (!this.building) {
+        let wanted = first;
+        while (wanted <= last && this.chunks.some(chunk => chunk.index === wanted)) wanted++;
+        if (wanted > last) break;
+        const spare = this.chunks.find(chunk => !(chunk.index >= first && chunk.index <= last));
+        if (!spare) break;
+        this.beginFill(spare, wanted);
+      }
+      rows -= this.continueFill(rows);
     }
     for (const chunk of this.chunks) {
       chunk.mesh.visible = !Number.isNaN(chunk.index);
@@ -271,9 +341,23 @@ export class TerrainMesh {
     }
   }
 
+  /**
+   * True once every chunk round course distance `s` has been built (none missing, none half way), out to `ahead` chunks in
+   * front. (The furthest chunk is being rebuilt every couple of seconds in ordinary play; only a nearby gap means the jelly
+   * has been put somewhere new.)
+   */
+  complete(s: number, ahead = CHUNKS_AHEAD): boolean {
+    const current = Math.floor(s / CHUNK_LENGTH);
+    for (let wanted = current - Math.min(1, CHUNKS_BEHIND); wanted <= current + Math.min(ahead, CHUNKS_AHEAD); wanted++) {
+      if (!this.chunks.some(chunk => chunk.index === wanted)) return false;
+    }
+    return true;
+  }
+
   /** Forget what every chunk shows, so the next update refills them all. */
   invalidate() {
     for (const chunk of this.chunks) chunk.index = UNASSIGNED;
+    this.building = null;
   }
 
   dispose() {
@@ -287,11 +371,13 @@ export class TerrainMesh {
     const normals = new Float32Array(vertexCount * 3);
     const tints = new Float32Array(vertexCount * TINT_SIZE);
     const holes = new Float32Array(vertexCount * HOLE_SIZE);
+    const glows = new Float32Array(vertexCount * 3);
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage));
-    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3).setUsage(THREE.DynamicDrawUsage));
-    geometry.setAttribute('tint', new THREE.BufferAttribute(tints, TINT_SIZE).setUsage(THREE.DynamicDrawUsage));
-    geometry.setAttribute('hole', new THREE.BufferAttribute(holes, HOLE_SIZE).setUsage(THREE.DynamicDrawUsage));
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    geometry.setAttribute('tint', new THREE.BufferAttribute(tints, TINT_SIZE));
+    geometry.setAttribute('hole', new THREE.BufferAttribute(holes, HOLE_SIZE));
+    geometry.setAttribute('glow', new THREE.BufferAttribute(glows, 3));
     geometry.setAttribute('uv', uvs);
     geometry.setIndex(this.indexAttribute);
     const mesh = new THREE.Mesh(geometry, this.materials[0]);
@@ -300,22 +386,39 @@ export class TerrainMesh {
     mesh.frustumCulled = false;
     mesh.visible = false;
     this.group.add(mesh);
-    return { mesh, positions, normals, tints, holes, rowOriginX: new Float32Array(CHUNK_ROWS + 1), index: UNASSIGNED };
+    return { mesh, positions, normals, tints, holes, glows, rowOriginX: new Float32Array(CHUNK_ROWS + 1), index: UNASSIGNED };
   }
 
-  private fill(chunk: Chunk, index: number) {
-    const { positions, normals, tints, holes, rowOriginX } = chunk;
+  /** Start building chunk `index` into `chunk`: hidden until it is done. */
+  private beginFill(chunk: Chunk, index: number) {
     const startS = index * CHUNK_LENGTH;
     // The whole chunk is drawn as the stretch it starts in. Rows that lie past
     // the end of that stretch are simply fully the next biome.
     const stretch = biomeStretch(startS);
-    const boundary = (stretch + 1) * BIOME_LENGTH;
-    chunk.mesh.material = this.materials[biomeOfStretch(stretch)];
-    const nextBiome = biomeOfStretch(stretch + 1);
-    let p = 0, t = 0, holeIndex = 0;
-    for (let row = 0; row <= CHUNK_ROWS; row++) {
+    chunk.index = UNASSIGNED;
+    chunk.mesh.material = this.materials[stretch % BIOME_COUNT];
+    collectHoles(this.basins, startS, startS + CHUNK_LENGTH);
+    // The ground changes from one biome's to the next across their boundary, except at the cave: there it has finished
+    // changing by the mouth on the way in, and does not start until the mouth on the way out, so all the ground under the
+    // roof is cave rock and none of it is the sand or the lava of outside.
+    const next = biomeOfStretch(stretch + 1), here = biomeOfStretch(stretch);
+    const shift = next === CAVE ? -CAVE_BLEND_SHIFT : here === CAVE ? CAVE_BLEND_SHIFT : 0;
+    this.building = { chunk, index, startS, boundary: (stretch + 1) * BIOME_LENGTH + shift, band: shift === 0 ? EDGE_BAND : CAVE_BLEND_BAND, nextBiome: next, row: 0 };
+  }
+
+  /** Build up to `rows` more rows of the chunk being built; returns how many it built. */
+  private continueFill(rows: number): number {
+    const state = this.building!;
+    const { chunk, startS, boundary, band, nextBiome } = state;
+    const { positions, normals, tints, holes, rowOriginX } = chunk;
+    const basins = this.rowBasins;
+    const last = Math.min(CHUNK_ROWS, state.row + rows - 1);
+    const built = last - state.row + 1;
+    let p = state.row * (CHUNK_COLUMNS + 1) * 3, t = state.row * (CHUNK_COLUMNS + 1) * TINT_SIZE, holeIndex = state.row * (CHUNK_COLUMNS + 1) * HOLE_SIZE;
+    for (let row = state.row; row <= last; row++) {
       const s = startS + row * TERRAIN_CELL;
       const z = -s;
+      narrowToRow(this.basins, basins, s);
       const centre = courseCenter(s), halfWidth = courseHalfWidth(s);
       // Each row is centred on the valley but snapped to the world lattice, so
       // the shared row between two chunks is computed identically by both.
@@ -324,9 +427,9 @@ export class TerrainMesh {
       const variation = valueNoise1(s / VARIATION_WAVELENGTH, SEED_VARIATION);
       for (let column = 0; column <= CHUNK_COLUMNS; column++) {
         const x = originX + COLUMN_OFFSETS[column];
-        const h = terrainHeight(x, z);
-        const dhdx = (terrainHeight(x + GRADIENT_STEP, z) - h) / GRADIENT_STEP;
-        const dhdz = (terrainHeight(x, z + GRADIENT_STEP) - h) / GRADIENT_STEP;
+        const h = terrainHeightWith(basins, x, z);
+        const dhdx = (terrainHeightWith(basins, x + GRADIENT_STEP, z) - h) / GRADIENT_STEP;
+        const dhdz = (terrainHeightWith(basins, x, z + GRADIENT_STEP) - h) / GRADIENT_STEP;
         const inverseLength = 1 / Math.hypot(dhdx, 1, dhdz);
         positions[p] = x; positions[p + 1] = h; positions[p + 2] = -row * TERRAIN_CELL;
         normals[p] = -dhdx * inverseLength; normals[p + 1] = inverseLength; normals[p + 2] = -dhdz * inverseLength;
@@ -339,11 +442,11 @@ export class TerrainMesh {
           EDGE_FINE * valueNoise2(x / EDGE_FINE_WAVELENGTH, s / EDGE_FINE_WAVELENGTH, SEED_EDGE_FINE);
         tints[t + SHADE] = patch * (1 - (1 - WALL_SHADE) * smoothstep(0, WALL_SHADE_DISTANCE, beyond));
         tints[t + VARIATION] = variation;
-        tints[t + BLEND] = smoothstep(boundary - EDGE_BAND, boundary + EDGE_BAND, s + wander);
+        tints[t + BLEND] = smoothstep(boundary - band, boundary + band, s + wander);
         tints[t + DIRT] = Math.min(1, kickerHeight(x, s) / KICKER_HEIGHT);
         t += TINT_SIZE;
         const depth = hazardAt(x - centre, s, halfWidth, this.hole);
-        const water = depth > 0 && isWaterKind(this.hole.kind);
+        const water = depth > 0 && isLiquidKind(this.hole.kind);
         holes[holeIndex + HOLE_DEPTH_INDEX] = depth;
         holes[holeIndex + HOLE_KIND_INDEX] = this.hole.kind === nextBiome ? 1 : 0;
         holes[holeIndex + HOLE_LEVEL_INDEX] = water ? holeLevel(this.hole) : h;
@@ -351,13 +454,74 @@ export class TerrainMesh {
         holeIndex += HOLE_SIZE;
       }
     }
+    state.row = last + 1;
+    if (state.row > CHUNK_ROWS) this.finishFill();
+    return built;
+  }
+
+  private finishFill() {
+    const { chunk, index, startS } = this.building!;
     this.stampRockShadows(chunk, startS);
+    this.stampGlow(chunk, startS);
     const { geometry } = chunk.mesh;
     geometry.attributes.position.needsUpdate = true;
     geometry.attributes.normal.needsUpdate = true;
     geometry.attributes.tint.needsUpdate = true;
     geometry.attributes.hole.needsUpdate = true;
+    geometry.attributes.glow.needsUpdate = true;
     chunk.index = index;
+    this.building = null;
+  }
+
+  /**
+   * The cave is lit by what glows in it. Each piece of ore and each pool throws its colour on the ground round it: a
+   * soft pool of light stamped into the chunk's vertices once, when the chunk is made. (Ore that is later collected leaves
+   * its light behind until the chunk is remade.)
+   */
+  private stampGlow(chunk: Chunk, startS: number) {
+    chunk.glows.fill(0);
+    if (caveAt(startS) === 0 && caveAt(startS + CHUNK_LENGTH) === 0) return;
+    const { ore, pool } = this;
+    const reach = VALLEY_HALF_WIDTH + VALLEY_HALF_WIDTH_SWING;
+    const centre = courseCenter(startS + CHUNK_LENGTH / 2);
+    const cells = Math.ceil(ORE_LIGHT_RADIUS / MUSHROOM_CELL);
+    for (let cellZ = mushroomCellIndex(-(startS + CHUNK_LENGTH)) - cells; cellZ <= mushroomCellIndex(-startS) + cells; cellZ++) {
+      for (let cellX = mushroomCellIndex(centre - reach); cellX <= mushroomCellIndex(centre + reach); cellX++) {
+        if (!mushroomInCell(cellX, cellZ, ore) || ore.kind !== CAVE) continue;
+        const color = sweetColor(CAVE, ore.color).deep;
+        const strength = ORE_LIGHT * (0.6 + ore.radius);
+        this.castLight(chunk, startS, ore.x, -ore.z, 0, ORE_LIGHT_RADIUS, color.r * strength, color.g * strength, color.b * strength);
+      }
+    }
+    const poolCells = Math.ceil((POOL_LIGHT_REACH + HAZARD_CELL) / HAZARD_CELL);
+    for (let j = holeCellIndex(startS) - poolCells; j <= holeCellIndex(startS + CHUNK_LENGTH) + poolCells; j++) {
+      for (let i = holeCellIndex(-reach) - 1; i <= holeCellIndex(reach) + 1; i++) {
+        if (!holeInCell(i, j, pool) || pool.kind !== CAVE) continue;
+        this.castLight(chunk, startS, courseCenter(pool.s) + pool.u, pool.s, pool.radius, POOL_LIGHT_REACH, POOL_LIGHT[0], POOL_LIGHT[1], POOL_LIGHT[2]);
+      }
+    }
+  }
+
+  /** Add a light at (x, s) to the chunk's vertices: full within `core` metres, fading to nothing `reach` beyond that. */
+  private castLight(chunk: Chunk, startS: number, x: number, s: number, core: number, reach: number, r: number, g: number, b: number) {
+    const { glows, rowOriginX } = chunk;
+    const outer = core + reach;
+    const rowFirst = Math.max(0, Math.ceil((s - outer - startS) / TERRAIN_CELL));
+    const rowLast = Math.min(CHUNK_ROWS, Math.floor((s + outer - startS) / TERRAIN_CELL));
+    for (let row = rowFirst; row <= rowLast; row++) {
+      const ds = startS + row * TERRAIN_CELL - s;
+      const coreLeft = rowOriginX[row] - CORE_HALF_WIDTH;
+      const columnFirst = SKIRT_COLUMNS + Math.max(0, Math.ceil((x - outer - coreLeft) / TERRAIN_CELL));
+      const columnLast = SKIRT_COLUMNS + Math.min(CORE_COLUMNS, Math.floor((x + outer - coreLeft) / TERRAIN_CELL));
+      for (let column = columnFirst; column <= columnLast; column++) {
+        const dx = rowOriginX[row] + COLUMN_OFFSETS[column] - x;
+        const fall = 1 - smoothstep(core, outer, Math.hypot(dx, ds));
+        if (fall <= 0) continue;
+        const v = (row * (CHUNK_COLUMNS + 1) + column) * 3;
+        const light = fall * fall;
+        glows[v] = Math.min(CAST_MAX, glows[v] + r * light); glows[v + 1] = Math.min(CAST_MAX, glows[v + 1] + g * light); glows[v + 2] = Math.min(CAST_MAX, glows[v + 2] + b * light);
+      }
+    }
   }
 
   /** Darken the vertices in each rock's shadow. Coarse, soft, and free at draw time. */

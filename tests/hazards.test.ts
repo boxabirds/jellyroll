@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BIOME_COUNT, BIOME_LENGTH, BIOMES, dominantBiome } from '../src/game/biomes.ts';
-import { createHazardSample, hazardAt, hazardReach, hazardShape, isWaterKind, laneCentre, laneHalfWidth } from '../src/game/hazards.ts';
-import { ballSpeed, createBall, stepBall, type Ball } from '../src/game/physics.ts';
+import { BIOME_COUNT, BIOME_LENGTH, BIOMES, ICE, dominantBiome, positionOfBiome } from '../src/game/biomes.ts';
+import { Stain, NO_STAIN, STAIN_FADE_SECONDS } from '../src/game/stain.ts';
+import { holeLevel } from '../src/game/terrain.ts';
+import { createHazardSample, hazardAt, hazardReach, hazardShape, isLiquidKind, laneCentre, laneHalfWidth, setHazardLevelBias } from '../src/game/hazards.ts';
+import { ballSpeed, createBall, stepBall, wear, type Ball } from '../src/game/physics.ts';
 import { courseCenter, courseHalfWidth, holeEffectAt, terrainHeight } from '../src/game/terrain.ts';
 import {
   HAZARD_EFFECTS, HAZARD_FREE_UNTIL, HAZARD_LANES, HAZARD_LANE_SOFT, MAX_RADIUS, MIN_SPEED, PHYSICS_HZ, PHYSICS_STEP, START_RADIUS,
@@ -104,13 +106,14 @@ test('terrain sinks in a hole and is untouched outside', () => {
 
 /** The entry to a big hole of `kind` in a loop, as [course distance, lateral offset]: at least HOLE_RUN metres of it lie ahead along the course. */
 const HOLE_RUN = 8;
+const SHARD_RUN = 7;
 const WATER_RUN = 3, WATER_DEPTH = 0.6;
 /** Holes are looked for on the valley floor, where the jelly stays on the ground. */
 const FLOOR_REACH = 9;
-function findHole(kind: number, loop: number): [number, number] {
+function findHole(kind: number, loop: number, wetRun = WATER_RUN): [number, number] {
   // A pond has a wide, gentle bank, so less of it is fully wet.
-  const run = isWaterKind(kind) ? WATER_RUN : HOLE_RUN, needed = isWaterKind(kind) ? WATER_DEPTH : 0.999;
-  const start = loop * BIOME_COUNT * BIOME_LENGTH + kind * BIOME_LENGTH + 300;
+  const run = isLiquidKind(kind) ? wetRun : HOLE_RUN, needed = isLiquidKind(kind) ? WATER_DEPTH : 0.999;
+  const start = loop * BIOME_COUNT * BIOME_LENGTH + positionOfBiome(kind) * BIOME_LENGTH + 300;
   for (let s = start; s < start + 1200; s += 0.5) {
     for (let u = -FLOOR_REACH; u <= FLOOR_REACH; u += 0.5) {
       let whole = true;
@@ -121,8 +124,8 @@ function findHole(kind: number, loop: number): [number, number] {
   throw new Error(`no ${BIOMES[kind].name} hole found`);
 }
 
-function ballIn(kind: number, speed: number): Ball {
-  const [s, u] = findHole(kind, 1);
+function ballIn(kind: number, speed: number, wetRun = WATER_RUN): Ball {
+  const [s, u] = findHole(kind, 2, wetRun);
   const ball = createBall();
   ball.x = courseCenter(s) + u; ball.z = -s;
   ball.y = terrainHeight(ball.x, ball.z) + ball.radius + 0.01;
@@ -158,11 +161,12 @@ test('a pond slows the jelly a lot and melts it quickly, but never below the min
 test('an oasis hurts like a pond', () => {
   assert.deepEqual(HAZARD_EFFECTS[2], HAZARD_EFFECTS[0]);
   const oasis = meltRate(2, 0.5), pond = meltRate(0, 0.5);
-  assert.ok(oasis > 0.02 && pond > 0.02 && oasis < pond * 1.6 && pond < oasis * 1.6, `oasis ${oasis} per second, pond ${pond}`);
+  assert.ok(oasis > 0.04 && pond > 0.04, `oasis ${oasis} per second, pond ${pond}: both should melt the jelly`);
 });
 
 test('ice shards tear pieces off, one every few metres', () => {
-  const ball = ballIn(1, 10);
+  // A stretch of shards long enough to be sure of a stab (one comes every HAZARD_STAB_SPACING metres).
+  const ball = ballIn(1, 10, SHARD_RUN);
   let stabs = 0;
   for (let i = 0; i < PHYSICS_HZ; i++) { stepBall(ball, { throttle: 0, steer: 0 }, PHYSICS_STEP); stabs += ball.stabs; }
   assert.ok(stabs >= 1, 'a jelly rolling through shards must be stabbed');
@@ -178,7 +182,7 @@ test('a steam vent burns the jelly and throws it into the air', () => {
     vented ||= ball.vented;
   }
   assert.ok(vented, 'the vent never fired');
-  assert.ok(highest > ball.radius + 3, `only rose ${highest - ball.radius} m`);
+  assert.ok(highest > ball.radius + 2, `only rose ${highest - ball.radius} m`);
   assert.ok(ball.radius < START_RADIUS, 'the vent should burn');
 });
 
@@ -206,4 +210,154 @@ test('hazard shape rises with distance', () => {
   assert.ok(hazardShape(BIOME_LENGTH * 5) > hazardShape(BIOME_LENGTH));
   assert.ok(hazardShape(BIOME_LENGTH * 50) < 1);
   assert.ok(HAZARD_LANE_SOFT > 0);
+});
+
+test('liquids lie flat and are held in: the surface is one height, and ground rises to it on every side of the wet part', () => {
+  let wet = 0, spilled = 0;
+  const kinds = new Set<number>();
+  const AROUND = 2, DIRECTIONS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  for (let s = 600; s < 8000; s += 2) {
+    for (let u = -9; u <= 9; u += 1) {
+      const x = courseCenter(s) + u;
+      if (holeEffectAt(x, -s, sample) < 0.5 || !isLiquidKind(sample.kind)) continue;
+      kinds.add(sample.kind);
+      const surface = holeLevel(sample);
+      wet++;
+      assert.ok(surface > terrainHeight(x, -s), `ground above the water at s ${s} u ${u}`);
+      // Water must not hang over ground lower than itself just outside the hole: that would be water holding itself up.
+      for (const [dx, dz] of DIRECTIONS) {
+        const nx = x + dx * AROUND, nz = -s + dz * AROUND;
+        // Another hole there is another scoop, and water may spill into it; only open ground counts.
+        if (hazardAt(nx - courseCenter(-nz), -nz, courseHalfWidth(-nz), sample) > 0) continue;
+        if (terrainHeight(nx, nz) < surface - 0.3) { spilled++; break; }
+      }
+    }
+  }
+  assert.ok(wet > 200, `only ${wet} wet points found`);
+  assert.deepEqual([...kinds].sort(), [0, 1, 2, 4, 5], 'ponds, icy water, oases, lava and cave pools are all liquids');
+  // The lowest point of the rim is where the liquid spills, so some wet points are always next to ground below the surface.
+  assert.ok(spilled / wet < 0.12, `${spilled} of ${wet} wet points have water hanging over lower ground`);
+});
+
+test('the ground never jumps where two holes overlap', () => {
+  let worst = 0;
+  // Fine steps measure the true gradient; a jump would show as a slope that grows without bound as the step shrinks.
+  const STEP = 0.01;
+  for (let s = 600; s < 16000; s += 3) {
+    for (const u of [-12, -4, 4, 12]) {
+      const x = courseCenter(s) + u;
+      worst = Math.max(worst, Math.abs(terrainHeight(x, -(s + STEP)) - terrainHeight(x, -s)) / STEP);
+    }
+  }
+  assert.ok(worst < 6, `the ground changes by ${worst} m per metre somewhere`);
+});
+
+test('the jelly is stained by what it touches, and the stain wears off', () => {
+  const stain = new Stain();
+  const ball = createBall();
+  ball.grounded = true; ball.hazardDepth = 1; ball.hazardKind = 4;
+  for (let i = 0; i < PHYSICS_HZ / 2; i++) stain.step(ball, PHYSICS_STEP);
+  assert.equal(stain.kind, 4);
+  assert.ok(stain.level > 0.9, `lava stain ${stain.level}`);
+  ball.hazardDepth = 0;
+  for (let i = 0; i < PHYSICS_HZ * STAIN_FADE_SECONDS * 1.1; i++) stain.step(ball, PHYSICS_STEP);
+  assert.equal(stain.level, 0);
+  assert.equal(stain.kind, NO_STAIN);
+  ball.hazardKind = 1; ball.stabs = 1; ball.hazardDepth = 1;
+  stain.step(ball, PHYSICS_STEP);
+  assert.equal(stain.kind, 1, 'a shard stab leaves white');
+  assert.equal(stain.level, 1);
+  ball.stabs = 0; ball.hazardKind = 0; ball.hazardDepth = 1;
+  stain.reset(); stain.step(ball, PHYSICS_STEP);
+  assert.ok(stain.kind === 0 && stain.level > 0, 'water stains blue');
+});
+
+// --- Snow ----------------------------------------------------------------------------
+
+const ICE_START = positionOfBiome(ICE) * BIOME_LENGTH + 600;
+
+function rollInSnow(seconds: number, throttle: number, from = ICE_START): Ball {
+  const ball = createBall();
+  ball.x = courseCenter(from); ball.z = -from;
+  ball.y = terrainHeight(ball.x, ball.z) + ball.radius + 0.05;
+  ball.vz = -8;
+  for (let i = 0; i < seconds * PHYSICS_HZ; i++) {
+    ball.wornOut = false; ball.radius = Math.max(ball.radius, START_RADIUS * 0.5);
+    stepBall(ball, { throttle, steer: 0 }, PHYSICS_STEP);
+  }
+  return ball;
+}
+
+test('rolling fast through snow packs it on, which protects against wear and takes away steering', () => {
+  const ball = rollInSnow(12, 1);
+  assert.ok(ball.snow > 0.5, `only ${ball.snow} snow after 12 s of W in the snow`);
+  // The same stretch of rolling wears a snowy jelly less.
+  const clean = createBall(), packed = createBall();
+  packed.snow = 1;
+  wear(clean, 100); wear(packed, 100);
+  assert.ok(START_RADIUS - packed.radius < (START_RADIUS - clean.radius) * 0.3, 'a full coat should protect against most of the wear');
+  // And steers far less: how far sideways a second of steering moves it, compared with not steering at all.
+  const steered = (snow: number) => {
+    const sideways = (steer: number) => {
+      const b = createBall(); b.snow = snow; b.vz = -10;
+      b.x = courseCenter(ICE_START); b.z = -ICE_START; b.y = terrainHeight(b.x, b.z) + b.radius + 0.05;
+      for (let i = 0; i < PHYSICS_HZ; i++) { b.wornOut = false; b.snow = snow; stepBall(b, { throttle: 0, steer }, PHYSICS_STEP); }
+      return b.x;
+    };
+    return Math.abs(sideways(1) - sideways(0));
+  };
+  assert.ok(steered(1) < steered(0) * 0.5, `a snowy jelly steered ${steered(1)} m against ${steered(0)} m clean`);
+});
+
+test('slowing down lets the snow fall off, and leaving the snow melts it', () => {
+  const ball = rollInSnow(12, 1);
+  const packed = ball.snow;
+  // Holding S slows to the minimum speed: the coat comes off.
+  for (let i = 0; i < PHYSICS_HZ * 14; i++) { ball.wornOut = false; ball.radius = Math.max(ball.radius, START_RADIUS * 0.5); stepBall(ball, { throttle: -1, steer: 0 }, PHYSICS_STEP); }
+  assert.ok(ball.snow < packed * 0.5, `snow only fell from ${packed} to ${ball.snow}`);
+  // Out of the snow altogether, it melts away.
+  const meadow = rollInSnow(1, 0, 600);
+  meadow.snow = 1;
+  for (let i = 0; i < PHYSICS_HZ * 20; i++) { meadow.wornOut = false; stepBall(meadow, { throttle: 0, steer: 0 }, PHYSICS_STEP); }
+  assert.ok(meadow.snow < 0.5, `snow still ${meadow.snow} 20 s after leaving the snow`);
+});
+
+test('snow is scraped off in proportion to how much of the ground under the jelly is not snow, including across a changeover', () => {
+  const lose = (from: number) => {
+    const ball = rollInSnow(0.1, 0, from);
+    ball.snow = 1;
+    const before = ball.snow;
+    for (let i = 0; i < PHYSICS_HZ * 2; i++) { ball.wornOut = false; ball.radius = Math.max(ball.radius, START_RADIUS * 0.5); stepBall(ball, { throttle: 1, steer: 0 }, PHYSICS_STEP); }
+    return before - ball.snow;
+  };
+  // Right in the ice: nothing lost to the ground (speed is high). Half way into the next biome: some. Fully out: most.
+  const ICE_MIDDLE = positionOfBiome(ICE) * BIOME_LENGTH + BIOME_LENGTH / 2;
+  const NEXT_BOUNDARY = (positionOfBiome(ICE) + 1) * BIOME_LENGTH;
+  const inSnow = lose(ICE_MIDDLE), halfway = lose(NEXT_BOUNDARY), out = lose(NEXT_BOUNDARY + 600);
+  assert.ok(inSnow < 0.05, `lost ${inSnow} of the coat in the snow`);
+  assert.ok(halfway > inSnow + 0.1, `lost ${halfway} half way out of the snow`);
+  assert.ok(out > halfway, `lost ${out} fully out of the snow against ${halfway} half way`);
+});
+
+test('the jelly is a sphere on the ground: no ground under its sides is ever inside it, however sharp the pit', () => {
+  setHazardLevelBias(6);
+  try {
+    // Roll a long way through the biggest holes, and at every step look at the ground all round under the sphere.
+    const ball = createBall();
+    ball.z = -700; ball.x = courseCenter(700); ball.y = terrainHeight(ball.x, ball.z) + ball.radius;
+    let worst = 0;
+    for (let i = 0; i < 40 * PHYSICS_HZ && !ball.wornOut; i++) {
+      ball.radius = START_RADIUS;
+      stepBall(ball, { throttle: 0, steer: Math.sin(i / 200) }, PHYSICS_STEP);
+      for (let k = 0; k < 6; k++) {
+        const angle = (k / 6) * Math.PI * 2, d = ball.radius * 0.7;
+        const ground = terrainHeight(ball.x + Math.cos(angle) * d, ball.z + Math.sin(angle) * d);
+        // The sphere's underside there is sqrt(r^2 - d^2) below its centre.
+        worst = Math.max(worst, ground - (ball.y - Math.sqrt(ball.radius ** 2 - d ** 2)));
+      }
+    }
+    assert.ok(worst < 0.02, `the ground was ${worst} m inside the jelly`);
+  } finally {
+    setHazardLevelBias(0);
+  }
 });

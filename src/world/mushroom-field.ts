@@ -11,17 +11,18 @@
  * mesh draws the other half of the blend.
  */
 import * as THREE from 'three/webgpu';
-import { attribute, cos, instancedDynamicBufferAttribute, mix, positionGeometry, positionLocal, sin, time, vec3 } from 'three/tsl';
+import { attribute, cos, instancedBufferAttribute, mix, positionGeometry, positionLocal, sin, time, vec3 } from 'three/tsl';
 import type Node from 'three/src/nodes/core/Node.js';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
-import { BIOME_COUNT, DUNES, ICE, LAVA, MEADOW, SCREE } from '../game/biomes.ts';
+import { BIOME_COUNT, CAVE, DUNES, ICE, LAVA, MEADOW, SCREE } from '../game/biomes.ts';
 import { createMushroom, isMushroomTaken, mushroomCellIndex, mushroomInCell, type MushroomLedger } from '../game/mushrooms.ts';
 import { smoothstep, valueNoise2 } from '../game/noise.ts';
 import type { Merges } from '../game/merges.ts';
 import { sproutScale, type SeedField } from '../game/seeds.ts';
+import type { Flock } from '../game/bees.ts';
 import { courseCenter } from '../game/terrain.ts';
 import {
-  MAX_MERGES, MAX_PLANTED, MERGE_SQUASH, MUSHROOM_CELL, MUSHROOM_EDGE_MARGIN, MUSHROOM_REST_HEIGHT, VALLEY_HALF_WIDTH, VALLEY_HALF_WIDTH_SWING,
+  BEE_MAX, BEE_MAX_CARGO, MAX_MERGES, MAX_PLANTED, MERGE_SQUASH, MUSHROOM_CELL, MUSHROOM_EDGE_MARGIN, MUSHROOM_REST_HEIGHT, VALLEY_HALF_WIDTH, VALLEY_HALF_WIDTH_SWING,
   WORLD_SEED,
 } from '../game/tuning.ts';
 import { sweetColor } from '../render/colors.ts';
@@ -174,13 +175,19 @@ KINDS[DUNES] = {
   geometry: cactusGeometry, trimTint: '#ff86bd', trimDeep: '#ff4f9a',
   finish: { transmission: 0.35, roughness: 0.3 }, glow: 0, breath: 0.04, bothSides: false,
 };
+/** Ore: a rough faceted nugget of metal: it mirrors the sky in its own colour and glints as it is passed. */
 KINDS[SCREE] = {
-  geometry: crystalGeometry, trimTint: '#ffffff', trimDeep: '#e6ecff',
-  finish: { transmission: 0.85, roughness: 0.03, flatShading: true }, glow: 0.12, breath: 0, bothSides: false,
+  geometry: () => lumpGeometry(1.4, 0.3, SEED_LUMPS + 20), trimTint: '#ffffff', trimDeep: '#e6ecff',
+  finish: { transmission: 0, roughness: 0.24, flatShading: true, metalness: 0.7, sparkle: 9 }, glow: 0.3, breath: 0, bothSides: false,
 };
 KINDS[LAVA] = {
   geometry: () => lumpGeometry(1.15, 0.22, SEED_LUMPS + 10), trimTint: '#ffd23a', trimDeep: '#ff6a00',
   finish: { transmission: 0.3, roughness: 0.25 }, glow: 1.5, breath: 0.09, bothSides: false,
+};
+/** Crystals (they used to be the scree's): clear, faceted, and glowing. In the cave they are the light. */
+KINDS[CAVE] = {
+  geometry: crystalGeometry, trimTint: '#ffffff', trimDeep: '#e6ecff',
+  finish: { transmission: 0.85, roughness: 0.03, flatShading: true }, glow: 1.6, breath: 0, bothSides: false,
 };
 
 // --- Field ----------------------------------------------------------------------
@@ -206,7 +213,10 @@ const HEIGHT_HASH = 13;
 
 // --- Merges: collectibles on their way into the jelly ----------------------------------
 /** Instances kept free at the end of each batch for merges in progress and sprouted seeds. */
-const MAX_STANDING = MAX_PER_KIND - MAX_MERGES - MAX_PLANTED;
+const MAX_STANDING = MAX_PER_KIND - MAX_MERGES - MAX_PLANTED - BEE_MAX * BEE_MAX_CARGO;
+/** What a bee carries hangs under it: this far below its centre to the top of the thing, side by side across its heading. */
+const CARRIED_DROP = 0.27;
+const CARRIED_SPREAD = 2.1;
 const UP = new THREE.Vector3(0, 1, 0);
 
 /** One kind's instanced mesh and the per-instance data that goes with it. */
@@ -225,9 +235,9 @@ class Batch {
   constructor(kind: number) {
     this.kind = kind;
     const look = KINDS[kind];
-    const deepLook = instancedDynamicBufferAttribute(this.deepLook, 'vec4');
-    const deep2Seed = instancedDynamicBufferAttribute(this.deep2Seed, 'vec4');
-    const tintRadius = instancedDynamicBufferAttribute(this.tintRadius, 'vec4');
+    const deepLook = instancedBufferAttribute(this.deepLook, 'vec4');
+    const deep2Seed = instancedBufferAttribute(this.deep2Seed, 'vec4');
+    const tintRadius = instancedBufferAttribute(this.tintRadius, 'vec4');
     const seed = deep2Seed.w as unknown as Node<'float'>;
     // By the time material nodes run, Three has already applied the instance
     // matrix to positionLocal, so the shape's own coordinates come from the
@@ -265,7 +275,6 @@ class Batch {
       material.positionNode = positionLocal.add(fromBase.mul(stretch).mul(tintRadius.w));
     }
     this.mesh = new THREE.InstancedMesh(look.geometry(), material, MAX_PER_KIND);
-    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.count = 0;
     this.mesh.renderOrder = 1;
     // Instances are spread along hundreds of metres; one item's bounds would cull them all.
@@ -371,7 +380,7 @@ export class MushroomField {
    * Draw every merge in progress, relative to the jelly's centre in render space,
    * and upload whatever changed. Call once a frame, after update().
    */
-  animate(merges: Merges, center: THREE.Vector3, seeds: SeedField, originZ: number) {
+  animate(merges: Merges, center: THREE.Vector3, seeds: SeedField, originZ: number, flock: Flock) {
     const { matrix, position, scale } = this;
     for (const batch of this.batches) batch.count = batch.standing;
     // Collectibles grown from seeds: they pop up at the spot the seed landed.
@@ -407,6 +416,24 @@ export class MushroomField {
       if (batch.count >= MAX_PER_KIND) continue;
       batch.write(batch.count++, matrix, merge.look, merge.color, merge.color2, merge.seed, shape.size);
       batch.dirty = true;
+    }
+    // What the bees are carrying: the real thing, at its real size, hung under the bee.
+    for (let b = 0; b < flock.count; b++) {
+      const bee = flock.bees[b];
+      const speed = Math.hypot(bee.vx, bee.vz);
+      const rightX = speed > 1 ? -bee.vz / speed : 1, rightZ = speed > 1 ? bee.vx / speed : 0;
+      for (let c = 0; c < bee.carried; c++) {
+        const item = bee.cargo[c];
+        const batch = this.batches[item.kind];
+        if (batch.count >= MAX_PER_KIND) continue;
+        const across = (c - (bee.carried - 1) / 2) * CARRIED_SPREAD * item.radius;
+        const tall = HEIGHT_SCALE_MIN + HEIGHT_SCALE_RANGE * ((item.seed * HEIGHT_HASH) % 1);
+        position.set(bee.x + rightX * across, bee.y - CARRIED_DROP - item.radius * tall, bee.z - originZ + rightZ * across);
+        scale.set(item.radius, item.radius * tall, item.radius);
+        matrix.compose(position, this.rotation, scale);
+        batch.write(batch.count++, matrix, item.look, item.color, item.color2, item.seed, item.radius);
+        batch.dirty = true;
+      }
     }
     for (const batch of this.batches) batch.commit();
   }

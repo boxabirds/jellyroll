@@ -8,14 +8,18 @@
  *   - drone: the JP-8 synth holding a pad in an AudioWorklet (drone.ts). It
  *     loads in the background, and if it fails the effects carry on.
  */
-import { BIOME_COUNT, DUNES, ICE, LAVA, MEADOW } from '../game/biomes.ts';
+import { BIOME_COUNT, CAVE, DUNES, ICE, LAVA, MEADOW, snowAt } from '../game/biomes.ts';
 import type { Ball } from '../game/physics.ts';
-import { MUSHROOM_MAX_RADIUS, MUSHROOM_MIN_RADIUS } from '../game/tuning.ts';
+import { BEE_MAX, MUSHROOM_MAX_RADIUS, MUSHROOM_MIN_RADIUS } from '../game/tuning.ts';
 import { DRONE_NOTES, DRONE_VELOCITY, JP8, droneCutoff, dronePatch } from './drone.ts';
-import { allSampleFiles, holeVariants, landingVariants, mergeVariants, type HoleSound, type SampleVariant } from './sample-sounds.ts';
+import { allSampleFiles, holeVariants, landingVariants, marbleBreakVariants, marbleHitVariants, MARBLE_ROLL_FILE, mergeVariants, type HoleSound, type SampleVariant } from './sample-sounds.ts';
 import jp8WasmUrl from './jp8/jp8_wasm_bg.wasm?url';
 import { holeHiss, holeSizzle, holeSplash, holeStab } from './hazard-sounds.ts';
 import { renderLayers } from './sfx-render.ts';
+import { renderSnowLoop } from './snow-sounds.ts';
+import { renderMetalLoop } from './metal-sounds.ts';
+import { renderBuzzLoop, buzzLevel, dopplerRate, BUZZ_GAIN } from './bee-sounds.ts';
+import { beePickup, glassPickup, levelUp, stoneImpact } from './companion-sounds.ts';
 import { CLIMB_RATIO, jumpSquish, landingSquish, magnetPickup, mergeSound, seedSpray, type Layer } from './sfx-sounds.ts';
 
 const DRONE_PROCESSOR = 'jellyland-jp8';
@@ -80,6 +84,34 @@ const LIMIT_RATIO = 12;
 const LIMIT_ATTACK_S = 0.002;
 const LIMIT_RELEASE_S = 0.12;
 
+/**
+ * Snow: a rustle loop runs all the time and is heard whenever the jelly is rolling on snow, louder the faster it goes
+ * and the more of the ground is snow; it eases in and out, and is kept low.
+ */
+const SNOW_ROLL_GAIN = 0.2;
+const SNOW_EASE_SECONDS = 0.18;
+/** Speed (m/s) at which the rustle is full, and the least it ever is while rolling at all. */
+const SNOW_ROLL_FULL_SPEED = 20;
+const SNOW_ROLL_MIN_SHARE = 0.25;
+/** The rustle plays a little faster as the jelly does. */
+/** The marble's rolling loop, set up like the snow's: how loud it is and how quiet at a crawl. Its pitch is the recording's own at every speed. */
+const METAL_ROLL_GAIN = 0.45;
+const METAL_ROLL_MIN_SHARE = 0.45;
+const STONE_MIN_GAIN = 0.55;
+const MARBLE_MIN_IMPACT = 1.2;
+const CENTS_PER_OCTAVE = 1200;
+const MARBLE_JUMP_RATE = 1.3;
+const MARBLE_JUMP_GAIN = 0.4;
+const SPIKE_BREAK_RATE = 1.15;
+const SPIKE_CRACK_RATE = 1.4;
+const SPIKE_CRACK_GAIN = 0.45;
+/** Bee buzz: how quickly loudness, pitch and pan follow the bee (s), how far apart the bees' pitches sit, and how far to the side the loudest pan goes. */
+const BUZZ_EASE_SECONDS = 0.06;
+const BUZZ_DETUNE = 0.035;
+const BUZZ_PAN = 0.8;
+const SNOW_ROLL_RATE_SLOW = 0.85;
+const SNOW_ROLL_RATE_FAST = 1.2;
+
 /** The drone's filter is only re-sent when it has moved by this fraction. */
 const CUTOFF_STEP = 0.04;
 /** The filter follows speed at this rate (1/s), so it swells rather than jumps. */
@@ -104,6 +136,10 @@ function recipes(): Recipe[] {
     list.push({ key: takeKey('jump', take), layers: () => jumpSquish() });
     list.push({ key: takeKey('magnet', take), layers: () => magnetPickup() });
     list.push({ key: takeKey('seeds', take), layers: () => seedSpray() });
+    list.push({ key: takeKey('glass', take), layers: () => glassPickup() });
+    LANDING_STEPS.forEach((intensity, step) => list.push({ key: takeKey(`stone${step}`, take), layers: () => stoneImpact(intensity) }));
+    list.push({ key: takeKey('bee', take), layers: () => beePickup() });
+    list.push({ key: takeKey('levelup', take), layers: () => levelUp() });
     list.push({ key: takeKey('splash', take), layers: () => holeSplash() });
     list.push({ key: takeKey('stab', take), layers: () => holeStab() });
     list.push({ key: takeKey('hiss', take), layers: () => holeHiss() });
@@ -145,6 +181,11 @@ export class JellySound {
   private inHole = false;
   private lastHole = Number.NEGATIVE_INFINITY;
   private lastWade = Number.NEGATIVE_INFINITY;
+  private snowLoop: { source: AudioBufferSourceNode; gain: GainNode } | null = null;
+  private metalLoop: { source: AudioBufferSourceNode; gain: GainNode } | null = null;
+  private metalRecorded = false;
+  /** One buzz per bee: a looping source with its own loudness and pan, and where the bee was last frame (for its Doppler). */
+  private readonly buzzes: { source: AudioBufferSourceNode; gain: GainNode; pan: StereoPannerNode; detune: number }[] = [];
   private cutoff = droneCutoff(0);
   private sentCutoff = 0;
 
@@ -182,6 +223,9 @@ export class JellySound {
     effects.connect(limiter).connect(master);
     this.master = master; this.analyser = analyser; this.effects = effects;
 
+    this.startSnowLoop(context, effects);
+    this.metalLoop = this.startLoop(context, effects, renderMetalLoop(context.sampleRate));
+    this.startBuzzes(context, effects);
     this.fillPool([...this.recipes.keys()]);
     void this.loadSamples(context);
     this.state = 'loading';
@@ -209,12 +253,34 @@ export class JellySound {
     }
     if (ball.magnetPicked) this.play(takeKey('magnet', this.nextTake()));
     if (ball.seedsSprayed) this.play(takeKey('seeds', this.nextTake()));
-    if (ball.jumped) this.play(takeKey('jump', this.nextTake()));
+    if (ball.glassPicked) this.play(takeKey('glass', this.nextTake()));
+    if (ball.beePicked) this.play(takeKey('bee', this.nextTake()));
+    if (ball.shieldUp >= 0 || ball.flock.levelledUp) this.play(takeKey('levelup', this.nextTake()));
+    // A marble does not squish as it jumps: it leaves the ground with a light knock of stone.
+    if (ball.jumped) {
+      if (ball.glassSeconds > 0) this.playVariant(marbleHitVariants()[0], MARBLE_JUMP_RATE, MARBLE_JUMP_GAIN, 0);
+      else this.play(takeKey('jump', this.nextTake()));
+    }
+    if (ball.brokenCount > 0) this.playVariant(marbleBreakVariants()[0], 1, 1, 0);
+    // The cave: a stalagmite knocked over and a stalactite landing both break like rock; one letting go cracks, higher and quieter.
+    if (ball.toppledCount > 0 || ball.landedCount > 0) this.playVariant(marbleBreakVariants()[0], SPIKE_BREAK_RATE, 1, 0);
+    if (ball.cracked > 0) this.playVariant(marbleBreakVariants()[0], SPIKE_CRACK_RATE, SPIKE_CRACK_GAIN, 0);
     this.holeSounds(ball, now);
     const impact = Math.max(ball.impact, ball.rockImpact);
-    if (impact >= MIN_IMPACT && now - this.lastImpact >= IMPACT_GAP_MS) {
+    // A marble is hard: even a small landing knocks.
+    const least = ball.glassSeconds > 0 ? MARBLE_MIN_IMPACT : MIN_IMPACT;
+    if (impact >= least && now - this.lastImpact >= IMPACT_GAP_MS) {
       this.lastImpact = now;
-      const strength = Math.min(1, (impact - MIN_IMPACT) / (FULL_IMPACT - MIN_IMPACT));
+      const strength = Math.min(1, Math.max(0, (impact - MIN_IMPACT) / (FULL_IMPACT - MIN_IMPACT)));
+      if (ball.glassSeconds > 0) {
+        // A glass marble hits like a boulder on rock, whatever it hit: a real rock hit, two octaves down.
+        const gain = STONE_MIN_GAIN + (1 - STONE_MIN_GAIN) * strength;
+        const variants = marbleHitVariants();
+        if (!this.playVariant(variants[Math.floor(Math.random() * variants.length)], 1, gain, 0)) {
+          this.play(takeKey(`stone${nearest(LANDING_STEPS, strength)}`, this.nextTake()), 1, gain);
+        }
+        return;
+      }
       const variants = landingVariants(strength);
       const played = this.playVariant(variants[Math.floor(Math.random() * variants.length)], 1, LANDING_MIN_GAIN + (1 - LANDING_MIN_GAIN) * strength, 0);
       if (!played) this.play(landingKey(nearest(LANDING_STEPS, strength), this.nextTake()));
@@ -225,7 +291,7 @@ export class JellySound {
   private holeSounds(ball: Ball, now: number) {
     const inside = ball.hazardDepth >= HOLE_ENTER_DEPTH && ball.grounded;
     const kind = ball.hazardKind;
-    const water = kind === MEADOW || kind === DUNES;
+    const water = kind === MEADOW || kind === DUNES || kind === CAVE;
     if (inside && !this.inHole && now - this.lastHole >= HOLE_GAP_MS) {
       this.lastHole = now; this.lastWade = now;
       const speed = Math.hypot(ball.vx, ball.vz);
@@ -276,11 +342,12 @@ export class JellySound {
    * Play one recipe: all its layers, each at its own speed, loudness and delay.
    * Returns false (playing nothing) if the context is not up or a file has not loaded yet.
    */
-  private playVariant(variant: SampleVariant, rate: number, gain: number, delay: number): boolean {
+  private playVariant(variant: SampleVariant, rate: number, gain: number, delay: number, cents?: number): boolean {
     const context = this.context, effects = this.effects;
     if (!context || !effects) return false;
     for (const layer of variant) if (!this.recorded.has(layer.file)) return false;
-    const jitter = 1 + SAMPLE_PITCH_JITTER * (2 * Math.random() - 1);
+    // Each play is a little off in pitch: by the usual amount, or by up to `cents` hundredths of a semitone either way if given.
+    const jitter = cents === undefined ? 1 + SAMPLE_PITCH_JITTER * (2 * Math.random() - 1) : 2 ** ((cents * (2 * Math.random() - 1)) / CENTS_PER_OCTAVE);
     const start = context.currentTime + delay;
     for (const layer of variant) {
       const sample = this.recorded.get(layer.file)!;
@@ -330,7 +397,105 @@ export class JellySound {
   }
 
   /** Once a frame: move the drone's filter with speed and sample the output level. */
+  /** One silent buzz per possible bee, each a little off the others in pitch so four do not sound as one. */
+  private startBuzzes(context: AudioContext, effects: AudioNode) {
+    const samples = renderBuzzLoop(context.sampleRate);
+    const buffer = context.createBuffer(MONO, samples.length, context.sampleRate);
+    buffer.getChannelData(0).set(samples);
+    for (let i = 0; i < BEE_MAX; i++) {
+      const source = context.createBufferSource();
+      source.buffer = buffer; source.loop = true;
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      const pan = context.createStereoPanner();
+      source.connect(gain).connect(pan).connect(effects);
+      source.start(context.currentTime, (i / BEE_MAX) * buffer.duration);
+      this.buzzes.push({ source, gain, pan, detune: 1 + (i - (BEE_MAX - 1) / 2) * BUZZ_DETUNE });
+    }
+  }
+
+  /** Each bee's buzz: louder the nearer it is to the jelly, bent in pitch by how fast it is closing, panned to the side it is on. */
+  private buzzFrame(ball: Ball) {
+    const context = this.context;
+    if (!context || this.buzzes.length === 0) return;
+    const now = context.currentTime;
+    const flock = ball.flock;
+    const speed = Math.hypot(ball.vx, ball.vz);
+    const rightX = speed > 1 ? -ball.vz / speed : 1, rightZ = speed > 1 ? ball.vx / speed : 0;
+    for (let i = 0; i < this.buzzes.length; i++) {
+      const buzz = this.buzzes[i];
+      if (i >= flock.count || ball.wornOut) { buzz.gain.gain.setTargetAtTime(0, now, BUZZ_EASE_SECONDS); continue; }
+      const bee = flock.bees[i];
+      const dx = bee.x - ball.x, dy = bee.y - ball.y, dz = bee.z - ball.z;
+      const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      // Closing speed: how fast the gap is shrinking, from the two velocities (not from last frame, which is noisy).
+      const closing = distance > 0.01 ? -((bee.vx - ball.vx) * dx + (bee.vy - ball.vy) * dy + (bee.vz - ball.vz) * dz) / distance : 0;
+      buzz.gain.gain.setTargetAtTime(buzzLevel(distance) * BUZZ_GAIN, now, BUZZ_EASE_SECONDS);
+      buzz.source.playbackRate.setTargetAtTime(dopplerRate(closing) * buzz.detune, now, BUZZ_EASE_SECONDS);
+      buzz.pan.pan.setTargetAtTime(Math.max(-1, Math.min(1, ((dx * rightX + dz * rightZ) / Math.max(distance, 1)) * BUZZ_PAN)), now, BUZZ_EASE_SECONDS);
+    }
+  }
+
+  /** Start a seamless loop from `samples`, silent. */
+  private startLoop(context: AudioContext, effects: AudioNode, samples: Float32Array) {
+    const buffer = context.createBuffer(MONO, samples.length, context.sampleRate);
+    buffer.getChannelData(0).set(samples);
+    const source = context.createBufferSource();
+    source.buffer = buffer; source.loop = true;
+    const gain = context.createGain();
+    gain.gain.value = 0;
+    source.connect(gain).connect(effects);
+    source.start();
+    return { source, gain };
+  }
+
+  /** Start the snow rustle loop, silent. */
+  private startSnowLoop(context: AudioContext, effects: AudioNode) {
+    this.snowLoop = this.startLoop(context, effects, renderSnowLoop(context.sampleRate));
+  }
+
+  /** The marble's rolling: metal on concrete, whenever it touches the ground, louder the faster it goes, at the same pitch. */
+  private metalFrame(ball: Ball) {
+    const context = this.context, effects = this.effects;
+    if (!this.metalLoop || !context || !effects) return;
+    // Once the recorded stone sliding has loaded it takes over from the synthesised stand-in.
+    const recorded = this.recorded.get(MARBLE_ROLL_FILE);
+    if (recorded && !this.metalRecorded) {
+      this.metalRecorded = true;
+      this.metalLoop.source.stop();
+      const source = context.createBufferSource();
+      source.buffer = recorded.buffer; source.loop = true;
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      source.connect(gain).connect(effects);
+      source.start();
+      this.metalLoop = { source, gain };
+    }
+    const loop = this.metalLoop;
+    const speed = Math.hypot(ball.vx, ball.vz);
+    const fast = Math.min(1, speed / SNOW_ROLL_FULL_SPEED);
+    const rolling = ball.grounded && !ball.wornOut && ball.glassSeconds > 0 ? 1 : 0;
+    const now = context.currentTime;
+    loop.gain.gain.setTargetAtTime(rolling * (METAL_ROLL_MIN_SHARE + (1 - METAL_ROLL_MIN_SHARE) * fast) * METAL_ROLL_GAIN, now, SNOW_EASE_SECONDS);
+  }
+
+  /** The rustle is heard while the jelly touches snow, whether or not any is sticking. */
+  private snowFrame(ball: Ball) {
+    const loop = this.snowLoop, context = this.context;
+    if (!loop || !context) return;
+    const speed = Math.hypot(ball.vx, ball.vz);
+    const fast = Math.min(1, speed / SNOW_ROLL_FULL_SPEED);
+    const rolling = ball.grounded && !ball.wornOut && ball.glassSeconds <= 0 ? snowAt(-ball.z) : 0;
+    const level = rolling * (SNOW_ROLL_MIN_SHARE + (1 - SNOW_ROLL_MIN_SHARE) * fast);
+    const now = context.currentTime;
+    loop.gain.gain.setTargetAtTime(level * SNOW_ROLL_GAIN, now, SNOW_EASE_SECONDS);
+    loop.source.playbackRate.setTargetAtTime(SNOW_ROLL_RATE_SLOW + (SNOW_ROLL_RATE_FAST - SNOW_ROLL_RATE_SLOW) * fast, now, SNOW_EASE_SECONDS);
+  }
+
   frame(ball: Ball, dt: number) {
+    this.snowFrame(ball);
+    this.metalFrame(ball);
+    this.buzzFrame(ball);
     const speed = ball.wornOut ? 0 : Math.hypot(ball.vx, ball.vy, ball.vz);
     this.cutoff += (droneCutoff(speed) - this.cutoff) * Math.min(1, CUTOFF_FOLLOW_RATE * dt);
     if (this.drone && Math.abs(this.cutoff - this.sentCutoff) > this.sentCutoff * CUTOFF_STEP) {
@@ -349,6 +514,12 @@ export class JellySound {
   }
 
   dispose() {
+    this.snowLoop?.source.stop();
+    this.snowLoop = null;
+    this.metalLoop?.source.stop();
+    this.metalLoop = null;
+    for (const buzz of this.buzzes) buzz.source.stop();
+    this.buzzes.length = 0;
     this.drone?.port.postMessage({ type: 'all-notes-off' });
     void this.context?.close();
     this.context = null; this.drone = null; this.effects = null; this.master = null;
