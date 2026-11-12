@@ -296,3 +296,58 @@ html:not(.show-cursor), html:not(.show-cursor) * { cursor: none !important; }
   .toast { top: calc(70px + var(--note) * 8); }
   .biome-banner { top: 61%; }
 }
+
+/* The world table and signing a score. */
+.scores-button {
+  position: fixed; left: 14px; bottom: 14px; z-index: 4; padding: 7px 12px; border-radius: 999px; font: inherit; font-size: 13px;
+  font-weight: 700; color: var(--ink-soft); background: var(--paper); border: 1px solid var(--edge); backdrop-filter: blur(10px); cursor: pointer; opacity: 0.8;
+}
+.scores-button:hover, .scores-button:focus-visible { opacity: 1; color: var(--ink); }
+.scores-button kbd { margin-left: 4px; }
+body:has(#name-entry.shown) .scores-button, body:has(#scoreboard.shown) .scores-button { visibility: hidden; }
+@media (pointer: coarse) { .scores-button kbd { display: none; } .scores-button { bottom: auto; top: 96px; } }
+body:has(#name-entry.shown) #worn-out, body:has(#scoreboard.shown) #worn-out { opacity: 0; }
+.score-note { color: var(--ink-soft); font-size: 14px; min-height: 1em; }
+
+#scoreboard {
+  position: fixed; inset: 0; z-index: 8; display: grid; align-content: center; justify-items: center; gap: 14px; padding: 18px;
+  background: rgb(36 28 58 / 62%); backdrop-filter: blur(5px); color: #fff; text-align: center;
+  opacity: 0; visibility: hidden; transition: opacity 0.25s ease, visibility 0.25s;
+}
+/* The name is signed in the game itself: the letters are in the scene, so this screen only dims it and holds the words. */
+#name-entry {
+  position: fixed; inset: 0; z-index: 8; display: grid; grid-template-rows: auto 1fr auto; justify-items: center; padding: 104px 18px 28px;
+  background: radial-gradient(ellipse at 50% 55%, rgb(36 28 58 / 8%), rgb(36 28 58 / 55%)); color: #fff; text-align: center;
+  opacity: 0; visibility: hidden; transition: opacity 0.25s ease, visibility 0.25s; text-shadow: 0 2px 10px rgb(0 0 0 / 55%);
+}
+.ne-top, .ne-bottom { display: grid; gap: 10px; justify-items: center; align-content: start; }
+.ne-bottom { grid-row: 3; align-content: end; }
+#name-entry.shown, #scoreboard.shown { opacity: 1; visibility: visible; }
+.ne-prompt { margin: 0; font-size: clamp(20px, 3.2vw, 34px); font-weight: 700; }
+.ne-prompt b { color: #ffc61a; }
+.ne-hint, .ne-message { margin: 0; font-size: 15px; opacity: 0.85; }
+.ne-message { min-height: 1.3em; font-weight: 700; color: #ffd3da; opacity: 0; }
+.ne-message.shown { opacity: 1; }
+.ne-actions { display: flex; gap: 10px; }
+.ne-actions button, .sb-close {
+  font: inherit; font-weight: 700; font-size: 16px; padding: 9px 22px; border-radius: 999px; cursor: pointer; border: 2px solid #2b2140;
+  background: #fff; color: #2b2140; box-shadow: 0 4px 0 #2b2140;
+}
+.ne-actions .ne-sign { background: #62c934; }
+.ne-actions button:disabled { opacity: 0.5; cursor: default; }
+.ne-challenge { min-height: 0; }
+.ne-input { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
+
+.sb-card { width: min(460px, 94vw); padding: 22px 26px; border-radius: 22px; background: var(--paper); color: var(--ink); border: 1px solid var(--edge); }
+.sb-card h2 { margin: 0 0 8px; font-size: 26px; }
+.sb-note { margin: 0 0 8px; color: var(--ink-soft); min-height: 0; }
+.sb-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; text-align: left; }
+.sb-row { display: grid; grid-template-columns: 2.4em 1fr auto; gap: 10px; padding: 7px 12px; border-radius: 12px; font-weight: 700; letter-spacing: 0.04em; }
+.sb-row:nth-child(odd) { background: rgb(0 0 0 / 4%); }
+.sb-row.mine { background: #ffc61a; color: #2b2140; }
+.sb-rank { color: var(--ink-soft); }
+.sb-row.mine .sb-rank { color: #2b2140; }
+.sb-dist { font-variant-numeric: tabular-nums; }
+.sb-gap { text-align: center; color: var(--ink-soft); }
+.sb-status { margin: 10px 0 0; color: var(--ink-soft); min-height: 1.2em; }
+.sb-close { margin-top: 14px; }

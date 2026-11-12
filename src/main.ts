@@ -27,7 +27,8 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <span><kbd class="wide">space</kbd> jump</span>
     <span class="separator"></span><span><kbd>R</kbd> restart</span><span><kbd>M</kbd> mute</span><span><kbd>?</kbd> hide</span>
   </footer>
-  <section id="worn-out" role="status" aria-live="polite"><div class="worn-card"><h2>Worn away.</h2><p>Score <b id="final-distance">0 m</b> · air time <b id="final-air">0.0 s</b></p><p>Merge with more mushrooms to roll further.</p><p class="keys-only"><kbd class="wide">space</kbd> or <kbd>R</kbd> to roll again</p><p class="touch-only">Tap the jump button to roll again</p></div></section>
+  <button id="scores-button" class="scores-button" type="button" aria-label="Top rolls">Top rolls <kbd>T</kbd></button>
+  <section id="worn-out" role="status" aria-live="polite"><div class="worn-card"><h2>Worn away.</h2><p>Score <b id="final-distance">0 m</b> · air time <b id="final-air">0.0 s</b></p><p>Merge with more mushrooms to roll further.</p><p id="score-note" class="score-note"></p><p class="keys-only"><kbd class="wide">space</kbd> or <kbd>R</kbd> to roll again</p><p class="touch-only">Tap the jump button to roll again</p></div></section>
   <section id="loading" role="status" aria-live="polite"><div class="loading-card"><div class="jelly-mark"></div><h2>Nearly rolling.</h2><p id="load-message">Loading the game</p><pre id="fatal" hidden></pre><button id="retry" hidden>Try again</button></div></section>
 `;
 

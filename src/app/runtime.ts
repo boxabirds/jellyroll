@@ -59,12 +59,18 @@ import { Sky } from '../world/sky.ts';
 import { TerrainMesh } from '../world/terrain-mesh.ts';
 import { Hud } from './hud.ts';
 import { Input } from './input.ts';
+import { HighScores } from './high-scores.ts';
+import { LetterStage } from '../world/jelly-letters/letter-stage.ts';
 
 /** Image-based light strength before the first biome's own setting is applied. */
 const ENVIRONMENT_INTENSITY = 0.75;
 /** Chunks refilled per frame while playing; the loading screen fills them all. */
 const CHUNKS_PER_FRAME = 1;
 const MILLISECONDS = 1000;
+/** ?test=leaderboard-entry: how long after loading the jelly wears away, the distance it claims (metres), and the size it shrinks to. */
+const TEST_DELAY_MS = 1200;
+const TEST_DISTANCE = 40;
+const TEST_RADIUS = 0.04;
 /** Reflection faces captured per frame: fewer on phones. */
 const MOBILE_PROBE_FACES = 1;
 /** Short vibrations (milliseconds) on a merge and on a hard landing, where the phone can vibrate. */
@@ -109,6 +115,7 @@ declare global {
       /** Test hook: spray a packet's worth of seeds from the jelly. */
       seeds: () => void;
       /** Test hook: play one merge sound and report whether it was recorded or synthesised, and how loud. */
+      letters: () => { text: string; count: number; settled: boolean; shown: boolean; boxes: { scale: number; letters: { character: string; lo: number[]; hi: number[] }[] } };
       probeMerge: (kind: number, radius: number) => Promise<{ source: string; peak: number }>;
       /** How many recorded sounds have loaded, of how many. */
       samples: () => { loaded: number; expected: number };
@@ -175,6 +182,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   const spikes = new SpikeField();
   const cave = new CaveShell();
   const beeItems = new BeeItems();
+  const letters = new LetterStage();
   const bees = new BeeFlock();
   /** 0 (jelly) to 1 (glass marble), eased so the change is seen and heard coming on and going off. */
   let glassLevel = 0;
@@ -200,7 +208,9 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     restrict: capturing => terrain.limitTo(capturing, jelly.center.z, PROBE_RANGE),
   });
   jelly.setReflection(probe.node);
-  const composite = createComposite(renderer, scene, rig.camera);
+  letters.setReflection(probe.node);
+  letters.setEnvironment(scene.environment, scene.environmentIntensity);
+  const composite = createComposite(renderer, scene, rig.camera, letters.scene);
   const popups = new GrowthPopups(rig.camera);
   const stain = new Stain();
   const alarm = new Alarm();
@@ -208,6 +218,13 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   const hud = new Hud();
   const badges = new Badges();
   const damage = new DamageNumbers();
+  // The world table: the run is registered with the score server, and its score is signed with giant letters at the end.
+  const scores = new HighScores(() => ball.distance, letters, rig.camera);
+  const scoreNote = document.querySelector<HTMLElement>('#score-note')!;
+  scores.onNote = text => { scoreNote.textContent = text; };
+  /** True while name entry or the table is up: the game waits. */
+  let modalOpen = false;
+  let wasWornOut = false;
 
   let accumulator = 0;
   let frames = 0;
@@ -236,8 +253,14 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     origin.follow(ball.z);
     rig.snap(ball, origin.z);
     probe.invalidate();
+    wasWornOut = false;
+    scores.runStarted();
   };
   const input = new Input(restart, () => sound.toggleMute(), () => sound.start());
+  scores.onModal = open => { modalOpen = open || scores.open; input.suspend(modalOpen); };
+  scores.entry.onThump = soft => sound.thump(soft);
+  input.onTable = () => scores.showTable();
+  document.querySelector<HTMLElement>('#scores-button')!.addEventListener('click', event => { (event.currentTarget as HTMLElement).blur(); scores.showTable(); });
   /** Where in a biome the debug jump drops the jelly: past the transition, and past the point where holes start. */
   const DEBUG_BIOME_OFFSET = 300;
   const DEBUG_BACK_METRES = 100;
@@ -262,6 +285,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     probe.invalidate();
   };
   input.onDebug = command => {
+    scores.session.debugUsed = true;
     if ('back' in command) {
       const s = Math.max(0, -ball.z - DEBUG_BACK_METRES);
       jumpTo(s, ball.x - courseCenter(-ball.z), 0);
@@ -409,8 +433,13 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     // A hidden tab neither simulates nor renders a stale frame.
     if (document.hidden) { accumulator = 0; return; }
     // Once the jelly has worn away, Space starts a new run (as R always does).
+    if (modalOpen) input.jumpPressed = false;
     if (ball.wornOut && input.jumpPressed) { restart(); input.jumpPressed = false; }
+    if (ball.wornOut && !wasWornOut) scores.runEnded(ball.distance);
+    wasWornOut = ball.wornOut;
     accumulator += dt;
+    // The game waits while the name or the table is on screen.
+    if (modalOpen) accumulator = 0;
     let steps = 0;
     const tPhysics = performance.now();
     while (accumulator >= PHYSICS_STEP && steps < MAX_SUBSTEPS_PER_FRAME) {
@@ -474,6 +503,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     if (lostCm > 0) popups.spawnLoss(lostCm, jelly.center, ball.radius, now);
     timed('badges', () => { badges.update(ball, now); });
     rig.update(ball, origin.z, dt);
+    letters.update(dt, rig.camera);
     interaction.update(ball, dt);
     timed('sim', () => { sim.update(dt); });
     input.setTilt(tilt.steer());
@@ -490,7 +520,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     const tRender = performance.now();
     if (probeEnabled) probe.update(renderer, jelly.center);
     tally('probe', performance.now() - tRender);
-    if (plain) renderer.render(scene, rig.camera); else composite.render();
+    if (plain) renderer.render(scene, rig.camera); else composite.render(letters.isShown);
     tally('render', performance.now() - tRender);
     frames++;
   };
@@ -541,7 +571,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
       biome: BIOMES[dominantBiome(-ball.z)].name, wear: wearScale(-ball.z), holeDepth: ball.hazardDepth, holeKind: ball.hazardKind, snow: ball.snow, spikesDown: ball.toppledSpikes.total, spikesFallen: ball.fallenSpikes.total, water: water.stats(), cost: (() => { const copy = { ...cost }; for (const key of Object.keys(cost)) delete cost[key]; return copy; })(), rippleMs: sim.lastMilliseconds + waterSpray.lastMilliseconds,
       sound: sound.state, audioContext: sound.contextState, soundsPlayed: sound.played, soundPeak: sound.loudest, muted: sound.muted, helpShown: input.helpShown,
     }),
-    place: jumpTo,
+    place: (s, lateral, lift) => { scores.session.debugUsed = true; jumpTo(s, lateral, lift); },
     rockColors: () => {
       const colors = rocks.mesh.instanceColor?.array ?? new Float32Array(0);
       let white = 0, brightest = 0;
@@ -555,9 +585,9 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     resize: radius => { ball.radius = radius; },
     magnet: () => grantMagnet(ball),
     bench,
-    glass: () => grantGlass(ball),
-    bee: () => { addBee(ball.flock, ball.x + 1, ball.y + 1, ball.z); },
-    shield: (kind, count) => { ball.shieldCounts[kind] = count; ball.shieldLevels[kind] = shieldLevel(count); },
+    glass: () => { scores.session.debugUsed = true; grantGlass(ball); },
+    bee: () => { scores.session.debugUsed = true; addBee(ball.flock, ball.x + 1, ball.y + 1, ball.z); },
+    shield: (kind, count) => { scores.session.debugUsed = true; ball.shieldCounts[kind] = count; ball.shieldLevels[kind] = shieldLevel(count); },
     toggle: (name, on) => {
       const parts: Record<string, THREE.Object3D> = {
         terrain: terrain.group, rocks: rocks.mesh, holes: holes.group, mushrooms: mushrooms.group, trail: trail.mesh, snowPath: snowPath.mesh, splash: splash.mesh,
@@ -570,6 +600,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
       if (!parts[name]) throw new Error(`unknown part ${name}`);
       parts[name].visible = on;
     },
+    letters: () => ({ text: letters.text, count: letters.count, settled: letters.settled, shown: letters.isShown, boxes: letters.boxes }),
     probeMerge: (kind, radius) => sound.probeMerge(kind, radius),
     samples: () => ({ loaded: sound.samplesLoaded, expected: sound.samplesExpected }),
     seeds: () => { spraySeeds(ball, 1); hud.toast('Seeds sown ahead: they are sprouting down the hill'); },
@@ -594,6 +625,10 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     void renderer.setAnimationLoop(null);
     hud.save();
     input.dispose();
+    scores.session.stop();
+    scores.entry.dispose();
+    scores.board.dispose();
+    letters.dispose();
     tilt.disable();
     touch.dispose();
     wakeLock?.release().catch(() => {});
@@ -616,6 +651,12 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   window.addEventListener('pagehide', event => { if (!event.persisted) dispose(); }, { once: true });
   import.meta.hot?.dispose(dispose);
 
+  scores.runStarted();
+  // ?test=leaderboard-entry: skip the playing. A moment after loading the jelly wears away with a small real score, so the game over
+  // and (if the local score server says it makes the top ten) the name screen come up at once. The server still checks the run.
+  if (new URLSearchParams(location.search).get('test') === 'leaderboard-entry') {
+    setTimeout(() => { ball.distance = TEST_DISTANCE; ball.radius = TEST_RADIUS; }, TEST_DELAY_MS);
+  }
   await renderer.setAnimationLoop(guardedFrame);
   return { stop };
 }

@@ -21,6 +21,17 @@ export function glassPickup(random: Random = Math.random): Layer[] {
   ];
 }
 
+/** A giant letter landing: a deep, short thump with a soft knock on top. `soft` is the refusal wobble. */
+export function letterThump(soft: boolean, random: Random = Math.random): Layer[] {
+  const level = soft ? 0.45 : 1;
+  const body = (soft ? 110 : 78) * jitter(random, PITCH_JITTER * 2);
+  return [
+    { start: 0, gain: 0.8 * level, zzfx: { frequency: body, shape: SHAPE_SINE, attack: 0.001, release: soft ? 0.12 : 0.26, slide: -0.5 } },
+    { start: 0, gain: 0.3 * level, zzfx: { frequency: 240 * jitter(random, PITCH_JITTER * 2), shape: SHAPE_SINE, attack: 0.001, release: 0.07, slide: -0.4 } },
+    { start: 0, gain: 0.22 * level, zzfx: { frequency: 900, shape: SHAPE_NOISE, attack: 0, release: 0.025, filter: 700 } },
+  ];
+}
+
 /** Finding a bee: a buzzy zip that rises, then two quick wing-beats. */
 export function beePickup(random: Random = Math.random): Layer[] {
   const root = 260 * jitter(random, PITCH_JITTER);

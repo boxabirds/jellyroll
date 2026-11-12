@@ -62,6 +62,17 @@ export class WaterSpray {
   drawnDrops = 0;
   private idle = true;
 
+  /** Free what the spray drew with: every mesh in the group, with its geometry and material. */
+  dispose() {
+    this.group.traverse(object => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.geometry.dispose();
+      (mesh.material as THREE.Material).dispose();
+    });
+    this.group.removeFromParent();
+  }
+
   constructor(sim: WaterSim, quality: Quality) {
     this.sim = sim;
     this.quality = quality;

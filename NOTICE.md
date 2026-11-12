@@ -23,6 +23,13 @@ and `src/render/jelly-looks.ts` re-expresses the `layered` and `findBit`
 patterns of its `scene.frag` in TSL, evaluated on the skin instead of
 raymarched. Merging conserves volume as there (`r = cbrt(r1³ + r2³)`).
 
+The giant jelly letters on the name entry screen are the squishy letters of the owner's own
+`unixjelly` project (GPL-3.0), which are themselves a port of Jelly Baby's soft body:
+`src/world/jelly-letters/jelly-body.ts` (from `JellyBody`), `letter-geometry.ts` (from
+`makeLetter`) and `letter-stage.ts` (from `JellyStage` and `jellyMaterial`). Their shapes are the
+Titan One font (SIL Open Font License 1.1, https://fonts.google.com/specimen/Titan+One), the letters
+A to Z and 0 to 9, as converted for that project: `src/assets/titan-letters.json`.
+
 Ground textures for the ice, dunes, scree and lava biomes are from ambientCG
 (https://ambientcg.com), CC0 1.0; `src/assets/ground/README.md` lists the
 assets.

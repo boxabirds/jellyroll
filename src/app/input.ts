@@ -15,6 +15,8 @@ const CLOSE_HELP_KEY = 'Escape';
 const BEE_KEY = 'b';
 const MARBLE_KEY = 'g';
 const BACK_KEY = ',';
+/** T shows the table of top rolls. */
+const TABLE_KEY = 't';
 const BIOME_KEYS = /^[1-6]$/;
 const HOLES_SMALLER_KEY = '-';
 const HOLES_BIGGER_KEYS = ['=', '+'];
@@ -40,6 +42,10 @@ export class Input {
   private readonly onGesture: () => void;
   /** Debug keys are passed here. */
   onDebug: (command: DebugCommand) => void = () => {};
+  /** The key for the top rolls table. */
+  onTable: () => void = () => {};
+  /** While a screen that takes typing (name entry, the table) is up, the game's keys do nothing. */
+  private held_off = false;
 
   /** `onGesture` fires on every handled key press: the browser's cue that audio may start. */
   constructor(onRestart: () => void, onMute: () => void, onGesture: () => void) {
@@ -55,7 +61,14 @@ export class Input {
     window.removeEventListener('blur', this.release);
   }
 
+  /** Hold the game's keys back while a screen that takes typing is open, and let go of any that are down. */
+  suspend(on: boolean) {
+    this.held_off = on;
+    if (on) this.release();
+  }
+
   private readonly keydown = (event: KeyboardEvent) => {
+    if (this.held_off) return;
     if (event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.key === HELP_CHARACTER) { if (!event.repeat) this.helpShown = !this.helpShown; event.preventDefault(); return; }
     if (event.code === CLOSE_HELP_KEY) {
@@ -69,6 +82,7 @@ export class Input {
       if (event.key.toLowerCase() === BEE_KEY) { this.onDebug({ bee: true }); return; }
       if (event.key.toLowerCase() === MARBLE_KEY) { this.onDebug({ marble: true }); return; }
       if (event.key === BACK_KEY) { this.onDebug({ back: true }); return; }
+      if (event.key.toLowerCase() === TABLE_KEY) { this.onTable(); return; }
       if (event.key === HOLES_SMALLER_KEY) { this.onDebug({ holes: -1 }); return; }
       if (HOLES_BIGGER_KEYS.includes(event.key)) { this.onDebug({ holes: 1 }); return; }
     }

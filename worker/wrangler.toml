@@ -1,0 +1,21 @@
+# The game and its score routes in one Worker. Local development: `npm run stack`.
+# Production database id and secrets are not in this file; see docs/plans/global-high-scores-todo.md.
+name = "jellyroll"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+[assets]
+directory = "../dist"
+binding = "ASSETS"
+# Paths that are not files fall through to the Worker so /api/* reaches the code.
+run_worker_first = ["/api/*"]
+
+[vars]
+ENVIRONMENT = "local"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "jellyroll-scores"
+# Replaced for production. Local runs use a throwaway database under .wrangler/.
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"

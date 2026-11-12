@@ -2,8 +2,8 @@
 import { BIOMES, biomeBlend, biomeOfStretch, biomeStretch, dominantBiome, snowAt, wearScale } from '../game/biomes.ts';
 import { ballSpeed, type Ball } from '../game/physics.ts';
 import { KMH_PER_MS, MIN_RADIUS, START_RADIUS } from '../game/tuning.ts';
+import { formatDistance } from '../shared/distance.ts';
 
-const METRES_PER_KILOMETRE = 1000;
 const REFRESH_SECONDS = 0.1;
 const CENTIMETRES_PER_METRE = 100;
 /** Below this fraction of the way from gone to fresh, the size readout warns. */
@@ -151,9 +151,4 @@ function readBest(): number {
 
 function formatSeconds(seconds: number): string {
   return `${seconds.toFixed(1)} s`;
-}
-
-function formatDistance(metres: number): string {
-  if (metres < METRES_PER_KILOMETRE) return `${Math.floor(metres)} m`;
-  return `${(metres / METRES_PER_KILOMETRE).toFixed(2)} km`;
 }

@@ -9,7 +9,10 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.ts",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "stack": "wrangler dev --config worker/wrangler.toml --port 8787",
+    "stack:migrate": "wrangler d1 migrations apply jellyroll-scores --local --config worker/wrangler.toml",
+    "test:worker": "node --test tests/worker-*.test.ts"
   },
   "dependencies": {
     "three": "^0.185.0"
@@ -18,6 +21,7 @@
     "@types/node": "^24.0.0",
     "@types/three": "^0.185.4",
     "typescript": "~6.0.2",
-    "vite": "^8.2.2"
+    "vite": "^8.2.2",
+    "wrangler": "^4.160.1"
   }
 }

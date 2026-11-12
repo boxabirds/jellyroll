@@ -7,6 +7,8 @@ export default defineConfig({
     // Reachable from outside the machine and from hosted preview domains (Replit, tunnels).
     host: true,
     allowedHosts: true,
+    // The score server of `npm run stack`, so the browser sees one origin.
+    proxy: { '/api': 'http://localhost:8787' },
   },
   preview: {
     host: true,

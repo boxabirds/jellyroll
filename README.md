@@ -149,10 +149,53 @@ your first touch, and the screen is kept awake while you play.
 WebGPU needs a secure page, so a phone must load the game over HTTPS (a deployed
 site or a tunnel); plain `http://<LAN address>` will report no WebGPU.
 
+## World high scores
+
+When the jelly wears away, the player signs the roll by typing up to nine letters
+or digits. Each appears in the game as a giant jelly letter (the squishy
+letters from the Unix Jelly guides, drawn in the game's own scene) that falls in with a
+thump, and Enter sends it. **T**, or the
+"Top rolls" button, shows the table at any time.
+
+The browser is never trusted with the score. A small Cloudflare Worker (`worker/`,
+with a D1 database) acts as the referee of time:
+
+- when a run starts the game asks the Worker to register it and gets a signed
+  token; while it plays, the game checks in every few seconds with its distance;
+- a score is accepted only for a run the server saw start and kept hearing from,
+  once, and only if the distance is something a jelly at top speed could have
+  rolled in the time the *server* measured (`src/shared/run-rules.ts`);
+- names are checked against a blocked list, posts per address are limited, a
+  Turnstile check is asked for, and the owner can remove a row.
+
+This stops the one-line fake score; it does not stop someone who waits out the
+clock, or a program that plays well. Rolls that used a debug key are never offered.
+Going live is in `docs/plans/global-high-scores-todo.md`.
+
+### Run it locally
+
+```sh
+npm run stack:migrate    # once: create the local database
+npm run stack            # the score server on :8787 (wrangler dev, Miniflare underneath)
+npm run dev              # the game on :5173; /api is proxied to the server
+```
+
+To see the name screen without playing, open the game with `?test=leaderboard-entry`
+(for example `http://localhost:5173/?test=leaderboard-entry`): a moment after loading the
+jelly wears away with a small score, and if the local table has a free place you get the
+giant letters at once. Press `R` and wait for the next wear-out for another go, or fill
+the table (`scripts/e2e-scores.py` shows how) to see the "would be 11th" message instead.
+
+The local secrets are in `worker/.dev.vars` (not committed), and the local
+database is under `worker/.wrangler/`. `npm run test:worker` runs the server
+tests against a real local D1 database.
+
 ## Deploy
 
-A production build is plain static files: HTML, JavaScript, images and two
-small binaries. There is no server code.
+The game itself is plain static files: HTML, JavaScript, images and two small
+binaries. The world high scores table is the one part with a server (see below);
+without it the game plays exactly the same and the end of a run says it cannot
+go on the table.
 
 ```sh
 npm install
@@ -204,13 +247,18 @@ enter the same build command and public directory.
 ## Checks
 
 ```sh
-npm test    # simulation invariants (node --test)
+npm test    # simulation invariants, and the score server on a real local D1 (node --test)
 uv run --with playwright scripts/drive.py http://localhost:5173/ shots "wait:2,shot:start,snap"
 ```
 
 The second command drives the running dev server in real Chrome with real key
 presses, writes screenshots, and prints the game state; see the docstring in
 `scripts/drive.py`.
+
+`scripts/e2e-scores.py` plays the whole world-table flow in real Chrome against the
+local stack: a registered run that checks in, giant letters with the nine-letter
+limit, a blocked name then a good one, the highlighted table row, a debug-key run,
+and a run with the server down.
 
 ## Water
 

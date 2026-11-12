@@ -19,7 +19,7 @@ import { renderLayers } from './sfx-render.ts';
 import { renderSnowLoop } from './snow-sounds.ts';
 import { renderMetalLoop } from './metal-sounds.ts';
 import { renderBuzzLoop, buzzLevel, dopplerRate, BUZZ_GAIN } from './bee-sounds.ts';
-import { beePickup, glassPickup, levelUp, stoneImpact } from './companion-sounds.ts';
+import { beePickup, glassPickup, letterThump, levelUp, stoneImpact } from './companion-sounds.ts';
 import { CLIMB_RATIO, jumpSquish, landingSquish, magnetPickup, mergeSound, seedSpray, type Layer } from './sfx-sounds.ts';
 
 const DRONE_PROCESSOR = 'jellyland-jp8';
@@ -139,6 +139,8 @@ function recipes(): Recipe[] {
     list.push({ key: takeKey('glass', take), layers: () => glassPickup() });
     LANDING_STEPS.forEach((intensity, step) => list.push({ key: takeKey(`stone${step}`, take), layers: () => stoneImpact(intensity) }));
     list.push({ key: takeKey('bee', take), layers: () => beePickup() });
+    list.push({ key: takeKey('thump', take), layers: () => letterThump(false) });
+    list.push({ key: takeKey('thump-soft', take), layers: () => letterThump(true) });
     list.push({ key: takeKey('levelup', take), layers: () => levelUp() });
     list.push({ key: takeKey('splash', take), layers: () => holeSplash() });
     list.push({ key: takeKey('stab', take), layers: () => holeStab() });
@@ -523,6 +525,12 @@ export class JellySound {
     this.drone?.port.postMessage({ type: 'all-notes-off' });
     void this.context?.close();
     this.context = null; this.drone = null; this.effects = null; this.master = null;
+  }
+
+  /** A giant name letter landing (or, when `soft`, the refusal wobble). Starts the sound if a key press has not already. */
+  thump(soft = false) {
+    this.start();
+    this.play(takeKey(soft ? 'thump-soft' : 'thump', this.nextTake()));
   }
 
   private nextTake() {
