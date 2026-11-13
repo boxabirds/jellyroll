@@ -183,3 +183,16 @@ test('rolling through a packet sprays seeds once, and restarting clears them', (
   assert.equal(usePowerup(ball, POWERUP_SEEDS), false, 'with none left there is nothing to use');
   assert.ok(START_RADIUS > 0);
 });
+
+test('sending another packet while seeds are still in the air or sprouting does not lose the first lot', () => {
+  const PACKETS = 4;
+  const ball = createBall();
+  ball.x = courseCenter(500); ball.z = -500; ball.y = terrainHeight(ball.x, ball.z) + ball.radius; ball.vz = -8;
+  ball.stock[POWERUP_SEEDS] = PACKETS;
+  for (let i = 0; i < 1.5 / PHYSICS_STEP; i++) {
+    // One packet every 0.3 s, so each lot is still flying or growing when the next goes out.
+    if (i % Math.round(0.3 / PHYSICS_STEP) === 0 && i / Math.round(0.3 / PHYSICS_STEP) < PACKETS) wantPowerup(ball, POWERUP_SEEDS);
+    stepBall(ball, { throttle: 0, steer: 0, jump: false }, PHYSICS_STEP);
+  }
+  assert.ok(livingSeeds(ball.seeds) >= SEED_COUNT * PACKETS * 0.8, `${livingSeeds(ball.seeds)} seeds alive of ${SEED_COUNT * PACKETS}: later packets overwrote the earlier ones`);
+});

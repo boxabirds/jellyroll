@@ -27,6 +27,7 @@ export class NameEntry {
   private readonly input = document.createElement('input');
   private readonly prompt = document.createElement('p');
   private readonly left = document.createElement('span');
+  private readonly leftTouch = document.createElement('span');
   private readonly message = document.createElement('p');
   private readonly signButton = document.createElement('button');
   private readonly skipButton = document.createElement('button');
@@ -44,7 +45,12 @@ export class NameEntry {
     const hint = document.createElement('p');
     hint.className = 'ne-hint';
     this.left.className = 'ne-left';
-    hint.append(`Type your name onto the platform: up to ${NAME_MAX_LETTERS} letters or digits · `, this.left, ' · Enter to sign');
+    // Words for each kind of player: a keyboard has Enter, a phone has the Sign button and taps for its own keyboard.
+    const keys = document.createElement('span'), taps = document.createElement('span');
+    keys.className = 'keys-only'; taps.className = 'touch-only';
+    keys.append(`Type your name onto the platform: up to ${NAME_MAX_LETTERS} letters or digits · `, this.left, ' · Enter to sign');
+    taps.append(`Tap here to type your name: up to ${NAME_MAX_LETTERS} letters or digits · `, this.leftTouch);
+    hint.append(keys, taps);
     this.message.className = 'ne-message';
     this.message.setAttribute('role', 'alert');
     this.challenge.className = 'ne-challenge';
@@ -57,6 +63,8 @@ export class NameEntry {
     this.input.autocapitalize = 'characters'; this.input.autocomplete = 'off'; this.input.spellcheck = false;
     this.input.setAttribute('aria-label', 'Your name');
     this.input.maxLength = 1;
+    // A phone's keyboard: capitals, no suggestions or correction in the way, and a key that says what Enter does.
+    this.input.setAttribute('autocorrect', 'off'); this.input.setAttribute('enterkeyhint', 'done'); this.input.inputMode = 'text';
     const top = document.createElement('div'), bottom = document.createElement('div');
     top.className = 'ne-top'; bottom.className = 'ne-bottom';
     top.append(this.prompt, hint);
@@ -64,7 +72,15 @@ export class NameEntry {
     this.row.onLand = soft => this.onThump(soft);
     this.root.append(top, bottom, this.input);
     document.body.append(this.root);
-    this.root.addEventListener('pointerdown', () => { if (matchMedia('(pointer: coarse)').matches) this.input.focus(); });
+    // A phone's keyboard comes up when the player taps the screen (it is only allowed in answer to a tap) and stays up: a tap on a
+    // button, or on the screen while the keyboard is already up, does not ask for it again.
+    this.root.addEventListener('click', event => {
+      if (!matchMedia('(pointer: coarse)').matches) return;
+      if ((event.target as HTMLElement).closest('button, a, iframe, .ne-challenge')) return;
+      if (document.activeElement !== this.input) this.input.focus({ preventScroll: true });
+    });
+    // Tapping a button must not take the keyboard away from the letters (a button takes focus, and the keyboard goes with it).
+    for (const button of [this.signButton, this.skipButton]) button.addEventListener('pointerdown', event => event.preventDefault());
     this.signButton.addEventListener('click', () => this.press('Enter'));
     this.skipButton.addEventListener('click', () => this.press('Escape'));
     this.input.addEventListener('input', () => {
@@ -86,7 +102,8 @@ export class NameEntry {
     this.prompt.append(`You made the leaderboard: ${ordinal(rank)}! Sign your `, Object.assign(document.createElement('b'), { textContent: formatDistance(distance) }), ' roll');
     this.setMessage('');
     this.updateCount();
-    this.input.focus();
+    // (A keyboard can only be brought up by a tap, so on a phone this waits for one; see the click handler.)
+    if (!matchMedia('(pointer: coarse)').matches) this.input.focus({ preventScroll: true });
     this.root.classList.add('shown');
     this.row.show(this.camera);
     window.addEventListener('keydown', this.keydown, true);
@@ -94,7 +111,6 @@ export class NameEntry {
     const previous = readLastName();
     if (previous) { for (const character of previous) { this.name += character; this.row.add(character, false); } this.updateCount(); this.fresh = true; }
     else this.fresh = false;
-    if (matchMedia('(pointer: coarse)').matches) this.input.focus();
     return new Promise(resolve => { this.settle = resolve; });
   }
 
@@ -165,7 +181,7 @@ export class NameEntry {
 
   private updateCount() {
     const remaining = NAME_MAX_LETTERS - this.name.length;
-    this.left.textContent = remaining === 0 ? 'that is the most' : `${remaining} left`;
+    this.left.textContent = this.leftTouch.textContent = remaining === 0 ? 'that is the most' : `${remaining} left`;
   }
 }
 

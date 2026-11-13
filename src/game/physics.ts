@@ -10,7 +10,9 @@ import { createHazardSample, hazardShape, isLiquidKind, onHazardsChanged, type H
 import { createMagnet, magnetInSegment, magnetSegment } from './magnets.ts';
 import { addBee, createFlock, resetFlock, stepFlock, type Flock, type Item } from './bees.ts';
 import { createSpot, pickupInSegment, pickupSegment } from './pickups.ts';
-import { BEE_PICKUP, GLASS_PICKUP } from './pickup-kinds.ts';
+import { BEE_PICKUP, FREEZE_PICKUP, GLASS_PICKUP } from './pickup-kinds.ts';
+import { freezeAhead } from './frost.ts';
+import { clearFrost, type Frost } from './frost-store.ts';
 import { createShieldCounts, shieldFactorAt, shieldLevel } from './progression.ts';
 import { createSeedPacket, seedPacketInSegment, seedPacketSegment } from './seed-packets.ts';
 import { advanceSeeds, clearSeeds, createSeedField, plantSeeds, sproutScale, type SeedField } from './seeds.ts';
@@ -35,6 +37,8 @@ import {
   STALAGMITE_POST_HEIGHT,
   STALAGMITE_POST_RADIUS,
   STALAGMITE_RESTITUTION,
+  FREEZE_PICKUP_RADIUS,
+  POWERUP_FREEZE,
   POWERUP_GLASS,
   POWERUP_MAGNET,
   POWERUP_SEEDS,
@@ -161,6 +165,12 @@ export type Ball = {
   magnetSeconds: number;
   /** True on the step a magnet was picked up. */
   magnetPicked: boolean;
+  /** The freeze ray: set for one step when it is fired, when what it hit was a lake (ice cracking) and when it was lava or hot ground (steam). */
+  froze: boolean; frozeCrack: boolean; frozeSteam: boolean;
+  /** The frost patches the last firing made, for the steam and the sounds. */
+  frostMade: Frost[];
+  freezePicked: boolean;
+  freezeTakenSegment: number;
   /** Slots whose key was pressed since the last step: used at the start of the next, so what they do is seen and heard in that step. */
   wanted: number[];
   /** Power-ups carried, by slot (POWERUP_MAGNET, POWERUP_GLASS, POWERUP_SEEDS); the number keys use them. */
@@ -228,6 +238,7 @@ const mushroom = createMushroom();
 const magnet = createMagnet();
 const seedPacket = createSeedPacket();
 const glassSpot = createSpot();
+const freezeSpot = createSpot();
 const beeSpot = createSpot();
 const NEVER = Number.POSITIVE_INFINITY;
 const NO_SEGMENT = -1;
@@ -247,7 +258,7 @@ export function createBall(): Ball {
     airTime: NEVER, jumpQueued: NEVER, jumpHeld: false, tuck: 0,
     snow: 0, clock: 0, hazardLevel: Number.NaN, hazardDepth: 0, hazardKind: 0, stabs: 0, vented: false, stabMetres: 0, venting: false,
     pickups: Array.from({ length: MAX_PICKUPS_PER_STEP }, () => ({ dx: 0, dy: 1, dz: 0, distance: 0, jellyRadius: 0, volume: 0, radius: 0, kind: 0, look: 0, color: 0, color2: 0, seed: 0 })),
-    pickupCount: 0, merges: 0, magnetSeconds: 0, magnetPicked: false, stock: Array.from({ length: POWERUP_SLOTS }, () => 0), wanted: [], magnetTakenSegment: NO_SEGMENT,
+    pickupCount: 0, merges: 0, magnetSeconds: 0, magnetPicked: false, stock: Array.from({ length: POWERUP_SLOTS }, () => 0), wanted: [], froze: false, frozeCrack: false, frozeSteam: false, frostMade: [], freezePicked: false, freezeTakenSegment: NO_SEGMENT, magnetTakenSegment: NO_SEGMENT,
     glassSeconds: 0, glassPicked: false, glassTakenSegment: NO_SEGMENT,
     shieldCounts: createShieldCounts(), shieldLevels: createShieldCounts(), shieldUp: -1,
     brokenRocks: createRockLedger(), broken: Array.from({ length: MAX_BROKEN_PER_STEP }, () => ({ x: 0, y: 0, z: 0, radius: 0, look: 0 })), brokenCount: 0,
@@ -278,7 +289,7 @@ export function resetBall(ball: Ball): void {
   ball.airTime = NEVER; ball.jumpQueued = NEVER; ball.jumpHeld = false; ball.tuck = 0;
   ball.snow = 0; ball.clock = 0; ball.hazardLevel = Number.NaN; ball.hazardDepth = 0; ball.hazardKind = 0; ball.stabs = 0; ball.vented = false; ball.stabMetres = 0; ball.venting = false;
   ball.pickupCount = 0; ball.merges = 0;
-  ball.magnetSeconds = 0; ball.magnetPicked = false; ball.magnetTakenSegment = NO_SEGMENT; ball.stock.fill(0); ball.wanted.length = 0;
+  ball.magnetSeconds = 0; ball.magnetPicked = false; ball.magnetTakenSegment = NO_SEGMENT; ball.stock.fill(0); ball.wanted.length = 0; ball.froze = ball.frozeCrack = ball.frozeSteam = ball.freezePicked = false; ball.frostMade.length = 0; ball.freezeTakenSegment = NO_SEGMENT; clearFrost();
   ball.seedsSprayed = false; ball.seedTakenSegment = NO_SEGMENT; clearSeeds(ball.seeds);
   ball.glassSeconds = 0; ball.glassPicked = false; ball.glassTakenSegment = NO_SEGMENT;
   ball.shieldCounts.fill(0); ball.shieldLevels.fill(0); ball.shieldUp = -1;
@@ -303,6 +314,7 @@ export function stepBall(ball: Ball, input: ControlInput, dt: number): void {
   ball.vented = false;
   ball.magnetPicked = false;
   ball.seedsSprayed = false;
+  ball.froze = false; ball.frozeCrack = false; ball.frozeSteam = false; ball.freezePicked = false;
   ball.packetFound = false;
   ball.glassPicked = false;
   ball.brokenCount = 0;
@@ -404,6 +416,7 @@ function advance(ball: Ball, input: ControlInput, dt: number): void {
   collectMagnet(ball, dt);
   collectSeedPacket(ball);
   collectGlass(ball, dt);
+  collectFreeze(ball);
   collectBee(ball);
   absorbMushrooms(ball);
   if (ball.grounded) wear(ball, Math.hypot(ball.vx, ball.vy, ball.vz) * dt);
@@ -805,6 +818,29 @@ function collectGlass(ball: Ball, dt: number): void {
   ball.glassPicked = true;
 }
 
+/** A freeze ray crystal, if one is floating here: kept in its slot. */
+function collectFreeze(ball: Ball): void {
+  const segment = pickupSegment(FREEZE_PICKUP, -ball.z);
+  if (segment === ball.freezeTakenSegment || !pickupInSegment(FREEZE_PICKUP, segment, freezeSpot)) return;
+  const reach = ball.radius + FREEZE_PICKUP_RADIUS;
+  const dx = freezeSpot.x - ball.x, dy = freezeSpot.y - ball.y, dz = freezeSpot.z - ball.z;
+  if (dx * dx + dy * dy + dz * dz >= reach * reach) return;
+  ball.freezeTakenSegment = segment;
+  stockUp(ball, POWERUP_FREEZE);
+  ball.freezePicked = true;
+}
+
+/** Fire the freeze ray straight ahead: whatever lake or lava it lands on freezes, blackens or cools. */
+export function fireFreeze(ball: Ball): void {
+  const speed = Math.hypot(ball.vx, ball.vz);
+  const dirX = speed > 1 ? ball.vx / speed : 0, dirZ = speed > 1 ? ball.vz / speed : -1;
+  ball.froze = true;
+  freezeAhead(ball.x, ball.z, dirX, dirZ, ball.frostMade);
+  for (const patch of ball.frostMade) {
+    if (patch.kind === 'ice') ball.frozeCrack = true; else ball.frozeSteam = true;
+  }
+}
+
 /** Keep a found power-up in its slot. */
 function stockUp(ball: Ball, slot: number): void {
   ball.stock[slot] = Math.min(STOCK_MAX, ball.stock[slot] + 1);
@@ -821,6 +857,7 @@ export function usePowerup(ball: Ball, slot: number): boolean {
   ball.stock[slot]--;
   if (slot === POWERUP_MAGNET) grantMagnet(ball);
   else if (slot === POWERUP_GLASS) grantGlass(ball);
+  else if (slot === POWERUP_FREEZE) fireFreeze(ball);
   else spraySeeds(ball, seedPacketSegment(-ball.z));
   return true;
 }

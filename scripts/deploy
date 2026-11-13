@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Build the game, render the production Worker config from .env, apply D1 migrations, deploy.
+# Needs: `npx wrangler login` done once, and D1_DATABASE_ID (and VITE_TURNSTILE_SITE_KEY) in .env.
+# Set ATTACH_DOMAIN=1 only once the zone is Active in Cloudflare: it then also attaches $JELLY_DOMAIN.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+set -a; source .env; set +a
+
+# Nothing goes live that is not in the repository: the working tree must be clean and HEAD must be what origin/main has.
+BRANCH=$(git branch --show-current)
+git fetch origin "$BRANCH" --quiet
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then echo "Refusing to deploy: uncommitted changes. Commit first." >&2; exit 1; fi
+if [ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$BRANCH")" ]; then echo "Refusing to deploy: HEAD is not pushed to origin/$BRANCH. Push first." >&2; exit 1; fi
+VERSION=$(node -p "require('./package.json').version")
+SHA=$(git rev-parse --short HEAD)
+DEPLOYED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+echo "Deploying v$VERSION ($SHA)"
+: "${D1_DATABASE_ID:?put the id from 'wrangler d1 create jellyroll-scores' in .env}"
+: "${VITE_TURNSTILE_SITE_KEY:?put the Turnstile site key in .env (a build without it cannot ask for the check)}"
+
+CONFIG=worker/wrangler.production.toml
+sed -e "s/^ENVIRONMENT = .*/ENVIRONMENT = \"production\"/" \
+    -e "s/^database_id = .*/database_id = \"${D1_DATABASE_ID}\"/" worker/wrangler.toml > "$CONFIG"
+# What is deployed, for /api/health.
+perl -0pi -e "s/^(ENVIRONMENT = .*)\$/\$1\nAPP_VERSION = \"$VERSION\"\nGIT_SHA = \"$SHA\"\nDEPLOYED_AT = \"$DEPLOYED_AT\"/m" "$CONFIG"
+if [ "${ATTACH_DOMAIN:-0}" = 1 ]; then
+  : "${JELLY_DOMAIN:?}"
+  printf '\n[[routes]]\npattern = "%s"\ncustom_domain = true\n' "$JELLY_DOMAIN" >> "$CONFIG"
+fi
+
+npx vite build
+npx wrangler d1 migrations apply jellyroll-scores --remote --config "$CONFIG"
+npx wrangler deploy --config "$CONFIG"
+
+# A local record of what went live and when (untracked: it is about this machine's deploys).
+echo "$DEPLOYED_AT,$VERSION,$SHA,${JELLY_DOMAIN:-workers.dev}" >> deploys.csv
+echo "Deployed v$VERSION ($SHA) at $DEPLOYED_AT"

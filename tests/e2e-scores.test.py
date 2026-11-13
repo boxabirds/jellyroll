@@ -34,7 +34,7 @@ def boot(browser, url, out, requests=None, down=False):
         page.on("request", lambda r: requests.append((r.method, r.url.split("/api")[-1])) if "/api/" in r.url else None)
     if down:
         page.route("**/api/**", lambda route: route.abort())
-    page.goto(url)
+    page.goto(url + ('&' if '?' in url else '?') + 'splash=0')
     page.wait_for_function("document.querySelector('#loading').classList.contains('hidden')", timeout=BOOT_TIMEOUT_MS)
     return page
 
@@ -146,6 +146,11 @@ def main() -> int:
         page.keyboard.press("r")
         time.sleep(1.5)
         page.keyboard.press(",")
+        # The first debug key of a run asks first (it disqualifies the run): the game waits, and Enter goes ahead.
+        page.wait_for_selector("#debug-gate.shown", timeout=5_000)
+        check("the first debug key asks before it disqualifies the run", "disqualifies" in page.inner_text("#debug-gate"))
+        page.keyboard.press("Enter")
+        page.wait_for_function("!document.querySelector('#debug-gate').classList.contains('shown')")
         wear_out(page)
         time.sleep(2.5)
         check("a run that used a debug key is not offered for signing", not page.evaluate("document.querySelector('#name-entry').classList.contains('shown')"))

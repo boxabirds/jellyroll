@@ -3,6 +3,7 @@
  * terrain function as the jelly descends. Nothing is allocated after
  * construction; a recycled chunk just has its vertex buffers rewritten.
  */
+import { frostAt } from '../game/frost-store.ts';
 import * as THREE from 'three/webgpu';
 import { attribute, float, mx_noise_float, transformNormalToView, mix, normalMap, positionWorld, sin, smoothstep as smoothstepNode, texture, time, vec2, vec3 } from 'three/tsl';
 import type Node from 'three/src/nodes/core/Node.js';
@@ -292,6 +293,12 @@ export class TerrainMesh {
     let rows = budget === Number.POSITIVE_INFINITY ? Number.POSITIVE_INFINITY : budget * ROWS_PER_BUDGET_UNIT;
     // Nearest missing stretch first, so a tight budget never leaves a hole underfoot.
     while (rows > 0) {
+      if (!this.building && this.stale.size > 0) {
+        const [index] = this.stale;
+        this.stale.delete(index);
+        const chunk = this.chunks.find(c => c.index === index);
+        if (chunk) { this.beginFill(chunk, index); chunk.index = index; }
+      }
       if (!this.building) {
         let wanted = first;
         while (wanted <= last && this.chunks.some(chunk => chunk.index === wanted)) wanted++;
@@ -356,6 +363,15 @@ export class TerrainMesh {
       if (!this.chunks.some(chunk => chunk.index === wanted)) return false;
     }
     return true;
+  }
+
+  /** Chunks to remake in place (they stay on screen as they were until the new ground is ready). */
+  private readonly stale = new Set<number>();
+
+  /** The ground between course distances sMin and sMax has changed (the freeze ray): remake the chunks it touches. */
+  refresh(sMin: number, sMax: number) {
+    const lo = Math.floor(Math.min(sMin, sMax) / CHUNK_LENGTH), hi = Math.floor(Math.max(sMin, sMax) / CHUNK_LENGTH);
+    for (let index = lo; index <= hi; index++) if (this.chunks.some(chunk => chunk.index === index)) this.stale.add(index);
   }
 
   /** Forget what every chunk shows, so the next update refills them all. */
@@ -449,7 +465,7 @@ export class TerrainMesh {
         tints[t + BLEND] = smoothstep(boundary - band, boundary + band, s + wander);
         tints[t + DIRT] = Math.min(1, kickerHeight(x, s) / KICKER_HEIGHT);
         t += TINT_SIZE;
-        const depth = hazardAt(x - centre, s, halfWidth, this.hole);
+        const depth = frostAt(x, z) ? 0 : hazardAt(x - centre, s, halfWidth, this.hole);
         const water = depth > 0 && isLiquidKind(this.hole.kind);
         holes[holeIndex + HOLE_DEPTH_INDEX] = depth;
         holes[holeIndex + HOLE_KIND_INDEX] = this.hole.kind === nextBiome ? 1 : 0;

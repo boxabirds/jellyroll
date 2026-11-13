@@ -90,6 +90,20 @@ export function nearRock(x: number, z: number): boolean {
 }
 
 /**
+ * The next free place for a seed: one that is not in use (collected, expired or never used). Only when every place is taken does the
+ * oldest seed give way, so a new packet never wipes out one that is still in the air or sprouting.
+ */
+function takeSlot(field: SeedField): Planted {
+  for (let tried = 0; tried < MAX_PLANTED; tried++) {
+    const index = (field.next + tried) % MAX_PLANTED;
+    if (!field.items[index].alive) { field.next = (index + 1) % MAX_PLANTED; return field.items[index]; }
+  }
+  const item = field.items[field.next];
+  field.next = (field.next + 1) % MAX_PLANTED;
+  return item;
+}
+
+/**
  * Throw a spray of seeds from the jelly at (fromX, fromY, fromZ). `packetKey`
  * identifies the packet (any integer unique to it) so the same packet always
  * sprays the same pattern. Returns how many seeds were planted.
@@ -115,8 +129,7 @@ export function plantSeeds(field: SeedField, fromX: number, fromY: number, fromZ
         found = !nearRock(courseCenter(s) + side, -s) && hazardAt(side, s, courseHalfWidth(s), holeScratch) === 0;
       }
       if (!found) continue;
-      const item = field.items[field.next];
-      field.next = (field.next + 1) % MAX_PLANTED;
+      const item = takeSlot(field);
       const size = hash2(packetKey, index, SEED_SIZE);
       item.radius = MUSHROOM_MIN_RADIUS + (MUSHROOM_MAX_RADIUS - MUSHROOM_MIN_RADIUS) * (SEED_MIN_SIZE_SHARE + (1 - SEED_MIN_SIZE_SHARE) * size);
       item.x = courseCenter(s) + side;

@@ -11,13 +11,15 @@ import { shieldLevel } from '../game/progression.ts';
 import { ballSpeed, createBall, grantGlass, grantMagnet, grow, resetBall, spraySeeds, stepBall, wantPowerup } from '../game/physics.ts';
 import { MagnetItems } from '../world/magnet-items.ts';
 import { SeedPacketItems } from '../world/seed-packet-items.ts';
+import { FreezeItems } from '../world/freeze-items.ts';
+import { FrostField } from '../world/frost-field.ts';
 import { GlassItems } from '../world/glass-items.ts';
 import { RockDebris } from '../world/rock-debris.ts';
 import { SpikeField } from '../world/spike-field.ts';
 import { CaveShell } from '../world/cave-shell.ts';
 import { BeeItems } from '../world/bee-items.ts';
 import { BeeFlock } from '../world/bee-flock.ts';
-import { GLASS_EASE_SECONDS, POWERUP_GLASS } from '../game/tuning.ts';
+import { GLASS_EASE_SECONDS, POWERUP_FREEZE, POWERUP_GLASS } from '../game/tuning.ts';
 import { SeedSpray } from '../world/seed-spray.ts';
 import { START_COLOR } from '../render/colors.ts';
 import { MushroomField } from '../world/mushroom-field.ts';
@@ -58,7 +60,13 @@ import { atmosphereAt, createAtmosphere, loadGroundTextures } from '../world/bio
 import { Sky } from '../world/sky.ts';
 import { TerrainMesh } from '../world/terrain-mesh.ts';
 import { Hud } from './hud.ts';
-import { Input } from './input.ts';
+import { DebugGate } from './debug-gate.ts';
+import { Splash } from './splash.ts';
+import { RunSaver } from './run-saver.ts';
+import { INTERRUPTED_EVENT } from '../render/unsupported.ts';
+import { RESUME_MIN_METRES, SNAPSHOT_VERSION, assignDeep, canResume, type RunSnapshot } from './run-snapshot.ts';
+import { frostPatches } from '../game/frost-store.ts';
+import { Input, type DebugCommand } from './input.ts';
 import { HighScores } from './high-scores.ts';
 import { Demo } from './demo.ts';
 import { LetterStage } from '../world/jelly-letters/letter-stage.ts';
@@ -118,6 +126,8 @@ declare global {
       /** Test hook: play one merge sound and report whether it was recorded or synthesised, and how loud. */
       letters: () => { text: string; count: number; settled: boolean; shown: boolean; boxes: { scale: number; letters: { character: string; lo: number[]; hi: number[] }[] } };
       probeMerge: (kind: number, radius: number) => Promise<{ source: string; peak: number }>;
+      /** Test hook: the browser takes the graphics device away, as a phone can. */
+      loseGpu: () => void;
       /** How many recorded sounds have loaded, of how many. */
       samples: () => { loaded: number; expected: number };
       /** Performance hook: show or hide one part of the scene (or skip the reflection probe) to find what costs frames. */
@@ -127,6 +137,9 @@ declare global {
     };
   }
 }
+
+/** After a rotation the size is checked again at these delays (ms), for browsers that settle their layout late. */
+const ROTATION_RECHECK_MS = [100, 350, 800];
 
 export async function startGame(stage: (message: string) => void, fail: (reason: unknown) => void): Promise<Game> {
   stage('Starting WebGPU');
@@ -179,6 +192,8 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   const magnets = new MagnetItems();
   const packets = new SeedPacketItems();
   const glassItems = new GlassItems();
+  const freezeItems = new FreezeItems();
+  const frost = new FrostField();
   const debris = new RockDebris();
   const spikes = new SpikeField();
   const cave = new CaveShell();
@@ -189,12 +204,19 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   let glassLevel = 0;
   const WATER_NEEDS_CHUNKS_AHEAD = 2;
   /** A landed stalactite breaks into pieces as a rock this many times its radius would. */
-  const SPIKE_DEBRIS_SIZE = 1.6;
+  const SPIKE_DEBRIS_SIZE = 2.2;
   let seedsExplained = false;
-  const stockSeen = [0, 0, 0];
-  const POWERUP_HINTS = ['Press 1 to switch on the magnet', 'Press 2 to become a glass marble', 'Press 3 to plant seeds'];
+  const stockSeen = [0, 0, 0, 0];
+  // What each power-up does, said the way the player uses it: with a key on a keyboard, by tapping its icon on a touch screen.
+  const POWERUP_HINTS = [
+    ['Press 1 to switch on the magnet', 'Tap the magnet to switch it on'],
+    ['Press 2 to become a glass marble', 'Tap the marble to become glass'],
+    ['Press 3 to plant seeds', 'Tap the seeds to plant them'],
+    ['Press 4 to freeze lakes and lava ahead', 'Tap the snowflake to freeze lakes and lava ahead'],
+  ];
+  const powerupHint = (slot: number) => POWERUP_HINTS[slot][document.documentElement.classList.contains('touch') ? 1 : 0];
   /** The key hint for each power-up is given only the first time one is found. */
-  const hinted = [false, false, false];
+  const hinted = [false, false, false, false];
   const projected = new THREE.Vector3();
   const spray = new SeedSpray();
   const holes = new HazardProps();
@@ -205,12 +227,12 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   // reflection probe captures: jellies do not appear in each other's reflections.
   const jellies = new THREE.Group();
   jellies.add(jelly.group, mushrooms.group);
-  scene.add(terrain.group, rocks.mesh, holes.group, water.mesh, waterSpray.group, snowPath.mesh, trail.mesh, splash.mesh, magnets.group, packets.group, glassItems.group, beeItems.group, bees.group, spray.mesh, debris.mesh, spikes.group, cave.group, jellies);
+  scene.add(terrain.group, rocks.mesh, holes.group, water.mesh, waterSpray.group, snowPath.mesh, trail.mesh, splash.mesh, magnets.group, packets.group, glassItems.group, freezeItems.group, frost.group, beeItems.group, bees.group, spray.mesh, debris.mesh, spikes.group, cave.group, jellies);
   // The reflection is re-rendered from the scene several times a frame, so it only draws the ground around the
   // jelly and leaves out everything too small to see in it.
   const coarse = matchMedia('(pointer: coarse)').matches;
   const probe = new LocalReflectionProbe(scene, jellies, environment.reflectionTexture, coarse ? MOBILE_PROBE_FACES : undefined, {
-    detail: [mushrooms.group, rocks.mesh, holes.group, water.mesh, waterSpray.group, trail.mesh, splash.mesh, magnets.group, packets.group, glassItems.group, beeItems.group, bees.group, spray.mesh],
+    detail: [mushrooms.group, rocks.mesh, holes.group, water.mesh, waterSpray.group, trail.mesh, splash.mesh, magnets.group, packets.group, glassItems.group, freezeItems.group, frost.group, beeItems.group, bees.group, spray.mesh],
     restrict: capturing => terrain.limitTo(capturing, jelly.center.z, PROBE_RANGE),
   });
   jelly.setReflection(probe.node);
@@ -262,14 +284,31 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     rig.snap(ball, origin.z);
     probe.invalidate();
     wasWornOut = false;
+    saver.clear();
+    gate.close();
     if (!demoMode) scores.runStarted();
   };
   const input = new Input(restart, () => sound.toggleMute(), () => sound.start());
-  scores.onModal = open => {
-    modalOpen = open || scores.open; input.suspend(modalOpen);
-    // The pointer is hidden while playing; the leaderboard and the name screen have buttons, so it comes back for them.
+  const gate = new DebugGate();
+  const titleScreen = new Splash(letters, rig.camera);
+  // A run in progress is saved every few seconds on a worker thread (the page only copies the snapshot into a message), so it can be
+  // picked up again after the graphics, the page or the tab is lost.
+  const saver = new RunSaver();
+  const snapshot = (): RunSnapshot => ({
+    version: SNAPSHOT_VERSION, savedAt: Date.now(), ball, frost: frostPatches, token: scores.session.runToken, debugUsed: scores.session.debugUsed,
+  });
+  const runInProgress = () => !demoMode && !ball.wornOut && !titleScreen.isOpen && ball.distance >= RESUME_MIN_METRES;
+  const saveNow = () => { if (runInProgress()) saver.save(performance.now(), snapshot); };
+  document.addEventListener('visibilitychange', () => { if (document.hidden) saveNow(); });
+  window.addEventListener('pagehide', saveNow);
+  window.addEventListener(INTERRUPTED_EVENT, saveNow);
+  const syncModal = (scoresOpen: boolean) => {
+    modalOpen = scoresOpen || scores.open || gate.isOpen || titleScreen.isOpen; input.suspend(modalOpen);
+    // The pointer is hidden while playing; the leaderboard, the name screen and the debug question have buttons, so it comes back for them.
     document.documentElement.classList.toggle('show-cursor', modalOpen);
   };
+  scores.onModal = syncModal;
+  gate.onOpen = () => syncModal(false);
   scores.entry.onThump = soft => sound.thump(soft);
   // The table is not part of play: it can be looked at once the jelly has worn away (and after signing a score).
   input.onTable = () => { if (ball.wornOut) scores.showTable(); };
@@ -301,8 +340,12 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     present(Number.POSITIVE_INFINITY, 0);
     probe.invalidate();
   };
+  // The first debug key of a run asks first (it takes the run off the leaderboard); the rest of that run's are not asked about.
   input.onDebug = command => {
-    scores.session.debugUsed = true;
+    if (scores.session.debugUsed) runDebug(command);
+    else gate.ask(() => { scores.session.debugUsed = true; runDebug(command); });
+  };
+  const runDebug = (command: DebugCommand) => {
     if ('back' in command) {
       const s = Math.max(0, -ball.z - DEBUG_BACK_METRES);
       jumpTo(s, ball.x - courseCenter(-ball.z), 0);
@@ -311,6 +354,9 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     } else if ('marble' in command) {
       ball.stock[POWERUP_GLASS]++;
       hud.toast('Debug: a glass marble to carry (press 2)');
+    } else if ('freeze' in command) {
+      ball.stock[POWERUP_FREEZE]++;
+      hud.toast('Debug: a freeze ray to carry (press 4)');
     } else if ('bee' in command) {
       const added = addBee(ball.flock, ball.x + 1, ball.y + 1, ball.z);
       hud.toast(added ? `Debug: bee added (${ball.flock.count})` : `Debug: the flock is full (${BEE_MAX})`);
@@ -338,6 +384,22 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
       ball, control: input.control,
       begin: (s, lateral) => { restart(); jumpTo(s, lateral, 0); redrawWorld(); },
     });
+  };
+  /** Carry on a saved run: the jelly, the freeze patches and the score server's token go back as they were, and the world is drawn there. */
+  const resumeRun = (saved: RunSnapshot) => {
+    assignDeep(ball as unknown as Record<string, unknown>, saved.ball as unknown as Record<string, unknown>);
+    frostPatches.length = 0; frostPatches.push(...saved.frost);
+    scores.session.resume(saved.token, saved.debugUsed);
+    wasWornOut = false;
+    // Nothing flies to the power-up chips for what was already carried.
+    for (let slot = 0; slot < stockSeen.length; slot++) stockSeen[slot] = ball.stock[slot] ?? 0;
+    resetWobble(wobble, ball); jelly.reset(); merges.reset(); alarm.reset(); stain.reset(); hud.setAlarm(0, false); jelly.setAlarm(0);
+    popups.clear(); damage.reset(); trail.reset(); bees.reset(); debris.reset(); spikes.reset(); snowPath.reset(); interaction.reset();
+    accumulator = 0;
+    origin.follow(ball.z);
+    rig.snap(ball, origin.z);
+    redrawWorld();
+    hud.toast('Back where you were');
   };
   // Touch: a stick, a jump button, and tilt steering from the phone's sensors.
   const tilt = new TiltSensor(text => hud.toast(text));
@@ -379,6 +441,8 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     magnets.update(ball, origin.z, playSeconds);
     packets.update(ball, origin.z, playSeconds);
     glassItems.update(ball.z, origin.z, ball.glassTakenSegment, false, playSeconds);
+    freezeItems.update(ball.z, origin.z, ball.freezeTakenSegment, false, playSeconds);
+    frost.update(dt, origin.z, ball);
     beeItems.frame(ball, origin.z, playSeconds);
     timed('bees', () => { bees.update(ball, origin.z, playSeconds, dt, rig.camera.position); });
     debris.update(origin.z, dt);
@@ -408,6 +472,11 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   };
   const resizeObserver = new ResizeObserver(resize);
   resizeObserver.observe(document.documentElement);
+  resizeObserver.observe(renderer.domElement);
+  // Turning a phone: browsers finish their layout late and sometimes report the old size first, so look again as it settles.
+  const settle = () => { resize(); for (const delay of ROTATION_RECHECK_MS) setTimeout(resize, delay); };
+  window.addEventListener('orientationchange', settle);
+  window.visualViewport?.addEventListener('resize', resize);
   resizeView(renderer, rig.camera, drawResolution());
 
   stage('Warming up');
@@ -466,8 +535,12 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     demo?.update(dt);
     if (modalOpen) input.jumpPressed = false;
     if (ball.wornOut && input.jumpPressed) { restart(); input.jumpPressed = false; }
-    if (ball.wornOut && !wasWornOut) scores.runEnded(ball.distance);
+    if (ball.wornOut && !wasWornOut) { scores.runEnded(ball.distance); saver.clear(); }
     wasWornOut = ball.wornOut;
+    if (runInProgress() && !modalOpen) {
+      saver.tick(now, snapshot);
+      if (saver.lastCopyMs > 0) { tally('save', saver.lastCopyMs); saver.lastCopyMs = 0; }
+    }
     accumulator += dt;
     // The game waits while the name or the table is on screen.
     if (modalOpen) accumulator = 0;
@@ -500,16 +573,25 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
         const rock = ball.broken[i];
         debris.burst(rock.x, rock.y, rock.z, rock.radius, rock.look, ball.vx, ball.vy, ball.vz);
       }
-      // The cave: a knocked-over stalagmite topples; a stalactite that comes down shatters where it lands.
+      // The cave: a stalagmite the marble hits is destroyed in a burst; a stalactite that comes down shatters where it lands.
       for (let i = 0; i < ball.toppledCount; i++) {
         const down = ball.toppled[i];
-        spikes.topple(down);
-        // It breaks as it goes over: pieces fly from where it stood.
-        debris.burst(down.x, down.y + down.length * 0.3, down.z, down.radius * SPIKE_DEBRIS_SIZE, down.look, ball.vx, ball.vy, ball.vz);
+        // It is destroyed, not toppled: the pieces that burst from where it stood are all that is left of it.
+        debris.burst(down.x, down.y + down.length * 0.35, down.z, down.radius * SPIKE_DEBRIS_SIZE, down.look, ball.vx, ball.vy, ball.vz);
       }
       for (let i = 0; i < ball.landedCount; i++) {
         const landed = ball.landed[i];
         debris.burst(landed.x, landed.y, landed.z, landed.radius * SPIKE_DEBRIS_SIZE, landed.look, 0, 0, 0);
+      }
+      // The freeze ray: a jet of foam pours out ahead; steam rises where it cooled lava or hot ground.
+      if (ball.froze) {
+        const speed = Math.hypot(ball.vx, ball.vz);
+        frost.spray(speed > 1 ? ball.vx / speed : 0, speed > 1 ? ball.vz / speed : -1);
+        for (const patch of ball.frostMade) {
+          if (patch.kind !== 'ice') frost.steam(patch);
+          // Frozen lakes are solid ground now: remake the terrain under them.
+          if (patch.kind !== 'cool') { terrain.refresh(-patch.z - patch.radius, -patch.z + patch.radius); water.refresh(-patch.z - patch.radius, -patch.z + patch.radius); }
+        }
       }
       if (ball.shieldUp >= 0) {
         const level = ball.shieldLevels[ball.shieldUp];
@@ -521,7 +603,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
           // Its picture flies from the jelly to its chip; the first time ever, say which key uses it.
           projected.copy(jelly.center).project(rig.camera);
           hud.flyPowerup(slot, (projected.x + 1) / 2 * innerWidth, (1 - projected.y) / 2 * innerHeight);
-          if (!hinted[slot]) { hinted[slot] = true; hud.toast(POWERUP_HINTS[slot]); }
+          if (!hinted[slot]) { hinted[slot] = true; hud.toast(powerupHint(slot)); }
         }
         stockSeen[slot] = ball.stock[slot];
       }
@@ -643,6 +725,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     },
     letters: () => ({ text: letters.text, count: letters.count, settled: letters.settled, shown: letters.isShown, boxes: letters.boxes }),
     probeMerge: (kind, radius) => sound.probeMerge(kind, radius),
+    loseGpu: () => (renderer.backend as unknown as { device: GPUDevice }).device.destroy(),
     samples: () => ({ loaded: sound.samplesLoaded, expected: sound.samplesExpected }),
     seeds: () => { spraySeeds(ball, 1); hud.toast('Seeds sown ahead: they are sprouting down the hill'); },
     mergeDemo: (kind, radius, look) => {
@@ -667,6 +750,9 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     hud.save();
     input.dispose();
     scores.session.stop();
+    saver.dispose();
+    gate.dispose();
+    titleScreen.dispose();
     scores.entry.dispose();
     scores.board.dispose();
     letters.dispose();
@@ -676,6 +762,8 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
     document.removeEventListener('visibilitychange', keepAwake);
     sound.dispose();
     resizeObserver.disconnect();
+    window.removeEventListener('orientationchange', settle);
+    window.visualViewport?.removeEventListener('resize', resize);
     if (resizeQueued) cancelAnimationFrame(resizeQueued);
     document.removeEventListener('visibilitychange', saveOnHide);
     delete window.__jellyland;
@@ -683,7 +771,7 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
 
   function dispose() {
     stop();
-    composite.dispose(); probe.dispose(); terrain.dispose(); rocks.dispose(); holes.dispose(); mushrooms.dispose(); splash.dispose(); popups.dispose(); badges.dispose(); trail.dispose(); snowPath.dispose(); sim.dispose(); water.dispose(); waterSpray.dispose(); magnets.dispose(); packets.dispose(); glassItems.dispose(); debris.dispose(); spikes.dispose(); cave.dispose(); beeItems.dispose(); bees.dispose(); spray.dispose(); jelly.dispose();
+    composite.dispose(); probe.dispose(); terrain.dispose(); rocks.dispose(); holes.dispose(); mushrooms.dispose(); splash.dispose(); popups.dispose(); badges.dispose(); trail.dispose(); snowPath.dispose(); sim.dispose(); water.dispose(); waterSpray.dispose(); magnets.dispose(); packets.dispose(); glassItems.dispose(); freezeItems.dispose(); frost.dispose(); debris.dispose(); spikes.dispose(); cave.dispose(); beeItems.dispose(); bees.dispose(); spray.dispose(); jelly.dispose();
     for (const maps of ground) for (const map of Object.values(maps)) map?.dispose();
     environment.dispose();
     renderer.domElement.remove();
@@ -693,6 +781,23 @@ export async function startGame(stage: (message: string) => void, fail: (reason:
   import.meta.hot?.dispose(dispose);
 
   if (demoMode) startDemo(); else scores.runStarted();
+  // The first screen (not in the demo, the test pages, or with ?splash=0): the title, the credits and Play; the game waits behind it.
+  const params = new URLSearchParams(location.search);
+  if (!demoMode && !params.has('test') && params.get('splash') !== '0') {
+    const shown = titleScreen.show();
+    syncModal(false);
+    // An interrupted roll (the graphics or the page were lost a moment ago) can be carried on: the button comes when it has been found.
+    let saved: RunSnapshot | null = null;
+    void saver.load().then(found => {
+      if (!canResume(found, Date.now()) || !titleScreen.isOpen) return;
+      saved = found;
+      titleScreen.offerResume(`${Math.round(found.ball.distance)} m`);
+    });
+    void shown.then(choice => {
+      syncModal(false); sound.start();
+      if (choice === 'continue' && saved) resumeRun(saved); else saver.clear();
+    });
+  }
   // ?test=leaderboard-entry: skip the playing. A moment after loading the jelly wears away with a small real score, so the game over
   // and (if the local score server says it makes the top ten) the name screen come up at once. The server still checks the run.
   if (new URLSearchParams(location.search).get('test') === 'leaderboard-entry') {

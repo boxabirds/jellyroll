@@ -4,6 +4,7 @@
  * meshes and rock placement all sample this one function, so nothing can
  * disagree about where the ground is.
  */
+import { frostAt, frozenHeight } from './frost-store.ts';
 import { caveDepth, hillScale, mogulScale, widthScale } from './biomes.ts';
 import { createHazardSample, createHoleDisc, edgeRadius, hazardAt, hazardFactor, hazardReach, holeCellIndex, holeInCell, isLiquidKind, onHazardsChanged, type HazardSample, type HoleDisc } from './hazards.ts';
 import { hash2, smoothstep, valueNoise1, valueNoise2 } from './noise.ts';
@@ -299,7 +300,7 @@ export function terrainHeightWith(set: HoleSet, x: number, z: number): number {
     cut = Math.max(cut, cutOf(set.u[n], set.s[n], set.radius[n], set.seed[n], set.floor[n], offset, s, ground));
   }
   if (cut === 0 && !set.vents) return ground;
-  return shaped(ground, cut, offset, s, halfWidth);
+  return frozenHeight(x, z, shaped(ground, cut, offset, s, halfWidth));
 }
 
 /** Keep in `to` only the basins of `from` that can reach course distance `s` (and a metre either side), for filling one row of a chunk. */
@@ -338,7 +339,7 @@ export function terrainHeight(x: number, z: number): number {
       cut = Math.max(cut, cutOf(cellDisc.u, cellDisc.s, cellDisc.radius, cellDisc.seed, floor, offset, s, ground));
     }
   }
-  return shaped(ground, cut, offset, s, halfWidth);
+  return frozenHeight(x, z, shaped(ground, cut, offset, s, halfWidth));
 }
 
 /**
@@ -349,6 +350,8 @@ export function holeEffectAt(x: number, z: number, out: HazardSample): number {
   const s = -z;
   const depth = hazardAt(x - courseCenter(s), s, courseHalfWidth(s), out);
   if (depth === 0 || !isLiquidKind(out.kind)) return depth;
+  // Water the freeze ray has frozen, or lava it has cooled, is not there any more as far as the jelly is concerned.
+  if (frostAt(x, z)) return 0;
   const wet = Math.min(1, Math.max(0, (holeLevel(out) - terrainHeight(x, z)) / HAZARD_WET_FADE));
   return depth * wet;
 }

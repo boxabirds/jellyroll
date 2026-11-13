@@ -31,6 +31,29 @@ export function packetPickup(random: Random = Math.random): Layer[] {
   ];
 }
 
+/** The freeze ray going off: a rush of cold air that rises, with a scatter of tiny ice chimes. */
+export function freezeBlast(random: Random = Math.random): Layer[] {
+  return [
+    { start: 0, gain: 0.5, zzfx: { frequency: 900, shape: SHAPE_NOISE, attack: 0.02, sustain: 0.18, release: 0.4, slide: 1.2, filter: 1400 } },
+    { start: 0, gain: 0.25, zzfx: { frequency: 2200, shape: SHAPE_NOISE, attack: 0.01, sustain: 0.08, release: 0.3, filter: 2400 } },
+    { start: 0.05, gain: 0.16, zzfx: { frequency: 3100 * jitter(random, 0.05), shape: SHAPE_SINE, attack: 0.001, release: 0.35 } },
+    { start: 0.13, gain: 0.14, zzfx: { frequency: 4200 * jitter(random, 0.05), shape: SHAPE_SINE, attack: 0.001, release: 0.3 } },
+    { start: 0.24, gain: 0.12, zzfx: { frequency: 5200 * jitter(random, 0.05), shape: SHAPE_SINE, attack: 0.001, release: 0.4 } },
+  ];
+}
+
+/** Ice cracking across a lake: a run of sharp cracks, a low groan under them, and a thin glassy ring. */
+export function iceCrack(random: Random = Math.random): Layer[] {
+  const cracks: Layer[] = [0, 0.06, 0.13, 0.24, 0.37].map((start, i) => ({
+    start, gain: 0.5 - i * 0.06, zzfx: { frequency: (2800 - i * 250) * jitter(random, 0.08), shape: SHAPE_NOISE, attack: 0, release: 0.02 + i * 0.008, filter: 2600 - i * 300 },
+  }));
+  return [
+    ...cracks,
+    { start: 0, gain: 0.45, zzfx: { frequency: 95 * jitter(random, 0.06), shape: SHAPE_SINE, attack: 0.002, release: 0.4, slide: -0.5 } },
+    { start: 0.03, gain: 0.14, zzfx: { frequency: 2400 * jitter(random, 0.04), shape: SHAPE_SINE, attack: 0.001, release: 0.5 } },
+  ];
+}
+
 /** A giant letter landing: a deep, short thump with a soft knock on top. `soft` is the refusal wobble. */
 export function letterThump(soft: boolean, random: Random = Math.random): Layer[] {
   const level = soft ? 0.45 : 1;

@@ -70,7 +70,10 @@ const GLOW = 0.5;
 const BODY_LIGHTNESS = 0.5;
 const DEEP_LIGHTNESS = 0.34;
 
-interface Body { body: JellyBody; leavingFor: number }
+interface Body { body: JellyBody; leavingFor: number; /** Extra room after this letter (a space before the next word). */ gapAfter: number }
+
+/** A space between words is this many letter heights wide. */
+const SPACE = 1.0;
 
 /**
  * Glossy jelly, lit from inside where it is thin and deeper in colour where it is thick (`aThick`, per vertex). The guides' jelly is
@@ -172,7 +175,7 @@ export class LetterStage {
     const live = this.live();
     const last = live[live.length - 1]?.body;
     const advance = advanceOf(character, LETTER_SIZE);
-    const cursor = last ? last.homeX + advanceOf(last.character, LETTER_SIZE) / 2 + LETTER_SIZE * GAP : 0;
+    const cursor = last ? last.homeX + advanceOf(last.character, LETTER_SIZE) / 2 + LETTER_SIZE * GAP + (live[live.length - 1].gapAfter) : 0;
     const index = live.length;
     const color = new THREE.Color(JELLY_COLORS[index % JELLY_COLORS.length]);
     const body = new JellyBody(this.stage, character, letterMaterial(color, LETTER_SIZE, this.env), cursor + advance / 2, LETTER_SIZE);
@@ -181,7 +184,13 @@ export class LetterStage {
     if (animate && !this.reduced.matches) body.place(this.viewHeight / fit * DROP_FROM_VIEW + LETTER_SIZE * (Math.random() * 0.5), (Math.random() - 0.5) * 0.12);
     else { body.place(0.02, 0); this.onLand(true); }
     body.updateSurface();
-    this.bodies.push({ body, leavingFor: 0 });
+    this.bodies.push({ body, leavingFor: 0, gapAfter: 0 });
+  }
+
+  /** A space after the last letter (for a title of more than one word). */
+  addSpace() {
+    const live = this.live();
+    if (live.length > 0) live[live.length - 1].gapAfter += LETTER_SIZE * SPACE;
   }
 
   /** The last letter is tossed up and away. */
@@ -258,7 +267,7 @@ export class LetterStage {
     this.aspect = camera.aspect;
     const live = this.live();
     const last = live[live.length - 1]?.body;
-    const wordEnd = last ? last.homeX + advanceOf(last.character, LETTER_SIZE) / 2 : 0;
+    const wordEnd = last ? last.homeX + advanceOf(last.character, LETTER_SIZE) / 2 + live[live.length - 1].gapAfter : 0;
     const ease = 1 - Math.exp(-EASE * dt);
     this.platformWidth += (this.platformFor(wordEnd) - this.platformWidth) * ease;
     this.scale += (this.fitFor(this.platformWidth) - this.scale) * ease;
@@ -270,7 +279,7 @@ export class LetterStage {
     this.platformEdge.scale.set(this.platformWidth + PLATFORM_EDGE * 2, PLATFORM_THICKNESS, PLATFORM_DEPTH + PLATFORM_EDGE * 2);
     this.platformEdge.position.set(0, -PLATFORM_EDGE, 0);
     // The flashing bar stands where the next letter will go, on the platform; hidden once the name is full.
-    const next = last ? last.homeX + advanceOf(last.character, LETTER_SIZE) / 2 + LETTER_SIZE * GAP * 0.5 : LETTER_SIZE * 0.05;
+    const next = last ? last.homeX + advanceOf(last.character, LETTER_SIZE) / 2 + LETTER_SIZE * GAP * 0.5 + live[live.length - 1].gapAfter : LETTER_SIZE * 0.05;
     this.cursor.position.set(next + CURSOR_WIDTH / 2, CURSOR_HEIGHT / 2, 0);
     this.cursor.visible = live.length < NAME_MAX_LETTERS && (this.reduced.matches || Math.floor(this.stage.t / BLINK_SECONDS) % 2 === 0);
     this.group.scale.setScalar(this.scale);

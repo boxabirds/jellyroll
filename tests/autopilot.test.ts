@@ -51,7 +51,7 @@ test('every demo scene starts in the biome it is about, and the splash scene rea
   const { BIOMES, CAVE, ICE, LAVA, MEADOW, SCREE, dominantBiome } = await import('../src/game/biomes.ts');
   const { createHazardSample, isLiquidKind } = await import('../src/game/hazards.ts');
   const { holeEffectAt } = await import('../src/game/terrain.ts');
-  const wanted: Record<string, number> = { 'Roll through it': MEADOW, 'Bring friends': MEADOW, 'Go solid': SCREE, 'Make a splash': MEADOW, 'Sow a garden': MEADOW, 'Slide on ice': ICE, 'Into the cave': CAVE, Lava: LAVA };
+  const wanted: Record<string, number> = { 'Roll through it': MEADOW, 'Bring friends': MEADOW, 'Go solid': SCREE, 'Make a splash': MEADOW, 'Sow a garden': MEADOW, 'Slide on ice': ICE, 'Into the cave': CAVE, Lava: LAVA, 'Freeze the water': MEADOW, 'Into the fog': SCREE };
   assert.equal(SCENES.length, Object.keys(wanted).length);
   for (const scene of SCENES) {
     // The cave scene starts just outside its mouth, so look a little way in.
@@ -68,4 +68,23 @@ test('every demo scene starts in the biome it is about, and the splash scene rea
     run = wet ? run + 1 : 0; longest = Math.max(longest, run);
   }
   assert.ok(longest >= 8, `the line held in the splash scene crosses ${longest} m of water`);
+});
+
+test('the freeze scene holds a line through a pond, and the fog scene runs into a fog event', async () => {
+  const { SCENES } = await import('../src/app/demo.ts');
+  const { createHazardSample, isLiquidKind } = await import('../src/game/hazards.ts');
+  const { holeEffectAt } = await import('../src/game/terrain.ts');
+  const { fogVisibilityAt } = await import('../src/game/fog.ts');
+  const freeze = SCENES.find(scene => scene.title === 'Freeze the water')!;
+  const sample = createHazardSample();
+  let run = 0, longest = 0;
+  for (let s = freeze.s; s < freeze.s + 200; s += 1) {
+    const wet = holeEffectAt(courseCenter(s) + freeze.lane!, -s, sample) > 0.6 && isLiquidKind(sample.kind);
+    run = wet ? run + 1 : 0; longest = Math.max(longest, run);
+  }
+  assert.ok(longest >= 8, `the line held in the freeze scene crosses ${longest} m of water`);
+  const fog = SCENES.find(scene => scene.title === 'Into the fog')!;
+  let thickest = 1;
+  for (let s = fog.s; s < fog.s + 400; s += 5) thickest = Math.min(thickest, fogVisibilityAt(s));
+  assert.ok(thickest < 0.5, `the fog scene reaches visibility ${thickest.toFixed(2)}`);
 });

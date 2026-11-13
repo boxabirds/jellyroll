@@ -72,7 +72,8 @@ test('a roll that could not have happened is not told it qualifies, and the reas
     stack.clock.now += 10 * MS_PER_SECOND;
     const impossible = await finish(stack, token, maxDistance(10) + 1);
     assert.deepEqual([impossible.status, impossible.body], [422, { qualifies: false, reason: 'not-possible' }]);
-    const forged = await finish(stack, `${token.slice(0, -1)}0`, 5);
+    // (Change the last character to a different one: a token that happens to end in the replacement would not be forged at all.)
+    const forged = await finish(stack, `${token.slice(0, -1)}${token.endsWith('0') ? '1' : '0'}`, 5);
     assert.deepEqual([forged.status, forged.body.qualifies, forged.body.reason], [401, false, 'not-verified']);
     const unverified = await stack.start();
     stack.clock.now += 5 * MS_PER_SECOND;

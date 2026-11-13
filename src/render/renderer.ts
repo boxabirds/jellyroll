@@ -5,6 +5,7 @@
  * drawing buffer and aspect (the chase camera owns field of view).
  */
 import * as THREE from 'three/webgpu';
+import { InterruptedError, UnsupportedError } from './unsupported.ts';
 
 /** Hard cap on physical pixels; DPR may fall below 1 on huge viewports. */
 /** (Set by the performance budget: at 3 million pixels the GPU alone took a whole frame on a laptop; see scripts/perf.py.) */
@@ -13,8 +14,10 @@ export const MAX_DEVICE_PIXEL_RATIO = 1.7;
 const TONE_MAPPING_EXPOSURE = 1.05;
 
 export async function createRenderer(fail: (e: unknown) => void) {
-  if (!window.isSecureContext) throw new Error('Please open this game over HTTPS or localhost.');
-  if (!navigator.gpu) throw new Error('This browser does not support WebGPU. Open in a WebGPU-capable browser.');
+  if (!window.isSecureContext) throw new UnsupportedError('insecure', 'Please open this game over HTTPS or localhost.');
+  if (!navigator.gpu) throw new UnsupportedError('no-webgpu', 'This browser does not support WebGPU (navigator.gpu is missing).');
+  // A browser can have WebGPU and still no usable graphics hardware (a blocklisted GPU, acceleration turned off).
+  if (!(await navigator.gpu.requestAdapter().catch(() => null))) throw new UnsupportedError('no-adapter', 'WebGPU found no graphics adapter.');
   const renderer = new THREE.WebGPURenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
   // r185 normally installs a WebGL fallback factory. Reject before it is invoked.
   (renderer as unknown as { _getFallback: null })._getFallback = null;
@@ -38,7 +41,8 @@ export async function createRenderer(fail: (e: unknown) => void) {
   const device = (renderer.backend as unknown as { device: GPUDevice }).device;
   void device.lost.then(info => {
     // Three forwards non-destroyed loss. A destruction outside our teardown is fatal too.
-    if (info.reason === 'destroyed' && !disposing) { fail(new Error('WebGPU device was unexpectedly destroyed')); void renderer.setAnimationLoop(null); }
+    // (The browser's own words for why are kept: on a phone they say whether it was memory or the page going to the background.)
+    if (info.reason === 'destroyed' && !disposing) { fail(new InterruptedError(`WebGPU device was destroyed: ${info.message || 'no reason given'}`)); void renderer.setAnimationLoop(null); }
   });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.AgXToneMapping; renderer.toneMappingExposure = TONE_MAPPING_EXPOSURE;
@@ -55,10 +59,21 @@ export function drawingBufferDpr(width: number, height: number, devicePixelRatio
 /** Phones have far less GPU than the pixel count of their screens suggests, so they draw fewer pixels. */
 export const MOBILE_MAX_DEVICE_PIXEL_RATIO = 1.5;
 
+const applied = new WeakMap<THREE.WebGPURenderer, { width: number; height: number; dpr: number }>();
+
 export function resizeView(renderer: THREE.WebGPURenderer, camera: THREE.PerspectiveCamera, maxDpr = MAX_DEVICE_PIXEL_RATIO) {
-  if (window.innerWidth <= 0 || window.innerHeight <= 0) return;
-  const width = Math.max(1, window.innerWidth), height = Math.max(1, window.innerHeight);
-  renderer.setDrawingBufferSize(width, height, drawingBufferDpr(width, height, window.devicePixelRatio, maxDpr));
+  // The size the canvas is actually shown at, not window.innerWidth/Height: after a phone is turned, those can still hold the old
+  // orientation for a moment (or differ from the page's layout size), and a buffer of the wrong shape stretches the picture.
+  const canvas = renderer.domElement;
+  const shownWidth = canvas.clientWidth || window.innerWidth, shownHeight = canvas.clientHeight || window.innerHeight;
+  if (shownWidth <= 0 || shownHeight <= 0) return;
+  const width = Math.max(1, shownWidth), height = Math.max(1, shownHeight);
+  const dpr = drawingBufferDpr(width, height, window.devicePixelRatio, maxDpr);
+  // A phone's toolbar sliding in and out sends many resize events: only a real change of size is worth remaking the buffers for.
+  const last = applied.get(renderer);
+  if (last && last.width === width && last.height === height && last.dpr === dpr) return;
+  applied.set(renderer, { width, height, dpr });
+  renderer.setDrawingBufferSize(width, height, dpr);
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
 }

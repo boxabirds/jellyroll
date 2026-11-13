@@ -56,7 +56,7 @@ export class Hud {
   private readonly magnetSeconds = document.querySelector<HTMLElement>('#magnet-seconds')!;
   private readonly slots = [...document.querySelectorAll<HTMLElement>('#powerups .slot')];
   /** Power-ups on their way to the chips, by slot: found, but not yet counted. */
-  private readonly arriving = [0, 0, 0];
+  private readonly arriving = [0, 0, 0, 0];
   private readonly wornOut = document.querySelector<HTMLElement>('#worn-out')!;
   private readonly finalDistance = document.querySelector<HTMLElement>('#final-distance')!;
   private bestDistance = readBest();

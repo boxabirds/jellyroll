@@ -1,7 +1,7 @@
 /**
  * On-screen controls for phones and tablets: a stick (a circle in a circle) for
- * speed and steering, a big jump button, and small buttons for tilt steering
- * and sound. Everything is translucent so the hill shows through. Each control
+ * speed and steering (bottom left), a big jump button (bottom right, under the
+ * power-ups), and small buttons for tilt steering and sound (left edge). Everything is translucent so the hill shows through. Each control
  * tracks its own finger, so the stick and the buttons work together.
  */
 import { stickValue, type StickValue } from './touch-math.ts';
@@ -33,13 +33,15 @@ export class TouchControls {
       <div class="stick-zone" data-stick>
         <div class="stick-base"><div class="stick-knob"></div></div>
       </div>
-      <div class="touch-buttons">
+      <div class="touch-settings">
         <button type="button" class="touch-small" data-tilt aria-label="Tilt steering" aria-pressed="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="7" y="3" width="10" height="18" rx="2.5" transform="rotate(-18 12 12)"/><path d="M5 20h14" opacity=".5"/></svg>
         </button>
         <button type="button" class="touch-small" data-sound aria-label="Mute sound" aria-pressed="false">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path class="sound-waves" d="M15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/><path class="sound-off" d="m15 9 6 6m0-6-6 6"/></svg>
         </button>
+      </div>
+      <div class="touch-buttons">
         <button type="button" class="touch-jump" data-jump aria-label="Jump">
           <svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 21V6m-6 6 6-6 6 6M6 24h16"/></svg>
         </button>

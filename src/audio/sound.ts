@@ -19,9 +19,11 @@ import { renderLayers } from './sfx-render.ts';
 import { renderSnowLoop } from './snow-sounds.ts';
 import { renderMetalLoop } from './metal-sounds.ts';
 import { renderBuzzLoop, buzzLevel, dopplerRate, BUZZ_GAIN } from './bee-sounds.ts';
-import { beePickup, glassPickup, letterThump, levelUp, packetPickup, stoneImpact } from './companion-sounds.ts';
+import { beePickup, freezeBlast, glassPickup, iceCrack, letterThump, levelUp, packetPickup, stoneImpact } from './companion-sounds.ts';
 import { CLIMB_RATIO, jumpSquish, landingSquish, magnetPickup, mergeSound, seedSpray, type Layer } from './sfx-sounds.ts';
 
+/** Seconds after the freeze ray fires that its effect is heard: the ice reaching the lake, the heat meeting it. */
+const FREEZE_RESULT_DELAY = 0.12;
 const DRONE_PROCESSOR = 'jellyland-jp8';
 /** Recorded sounds are found by file name among the bundled files. */
 const SAMPLE_URLS = import.meta.glob('./samples/*.{ogg,mp3}', { eager: true, query: '?url', import: 'default' }) as Record<string, string>;
@@ -140,6 +142,8 @@ function recipes(): Recipe[] {
     LANDING_STEPS.forEach((intensity, step) => list.push({ key: takeKey(`stone${step}`, take), layers: () => stoneImpact(intensity) }));
     list.push({ key: takeKey('bee', take), layers: () => beePickup() });
     list.push({ key: takeKey('packet', take), layers: () => packetPickup() });
+    list.push({ key: takeKey('freeze', take), layers: () => freezeBlast() });
+    list.push({ key: takeKey('icecrack', take), layers: () => iceCrack() });
     list.push({ key: takeKey('thump', take), layers: () => letterThump(false) });
     list.push({ key: takeKey('thump-soft', take), layers: () => letterThump(true) });
     list.push({ key: takeKey('levelup', take), layers: () => levelUp() });
@@ -258,6 +262,15 @@ export class JellySound {
     if (ball.seedsSprayed) this.play(takeKey('seeds', this.nextTake()));
     if (ball.glassPicked) this.play(takeKey('glass', this.nextTake()));
     if (ball.packetFound) this.play(takeKey('packet', this.nextTake()));
+    if (ball.freezePicked) this.play(takeKey('glass', this.nextTake()));
+    // The freeze ray: the blast of cold air, then what it did, a moment later: ice cracking on a lake, steam hissing off lava and hot ground.
+    if (ball.froze) this.play(takeKey('freeze', this.nextTake()));
+    if (ball.frozeCrack) this.play(takeKey('icecrack', this.nextTake()), 1, 1, FREEZE_RESULT_DELAY);
+    if (ball.frozeSteam) {
+      // The same recorded steam hiss the vents use, or the synthesised one until it has loaded.
+      const hisses = holeVariants('hiss');
+      if (!this.playVariant(hisses[Math.floor(Math.random() * hisses.length)], 1, 1, FREEZE_RESULT_DELAY)) this.play(takeKey('hiss', this.nextTake()), 1, 1, FREEZE_RESULT_DELAY);
+    }
     if (ball.beePicked) this.play(takeKey('bee', this.nextTake()));
     if (ball.shieldUp >= 0 || ball.flock.levelledUp) this.play(takeKey('levelup', this.nextTake()));
     // A marble does not squish as it jumps: it leaves the ground with a light knock of stone.

@@ -59,6 +59,9 @@ const BUILD_BUDGET_MS = 1.5;
 const KEY_SPAN = 4096;
 const KEY_OFFSET = 1024;
 
+/** Cells either side of a changed stretch whose pools may reach into it. */
+const REFRESH_CELLS = 2;
+
 export class WaterSurfaces {
   readonly mesh: THREE.Mesh;
   /** The direction to the sun, and where the ripples are: shader inputs. */
@@ -197,6 +200,18 @@ export class WaterSurfaces {
     let wet = 0;
     for (const patch of this.patches.values()) if (patch) wet++;
     return { pools: this.patches.size, wet, points: this.used, waiting: this.queue.length - this.queued, visible: this.mesh.visible, hold: this.hold };
+  }
+
+  /** The ground between course distances sMin and sMax has changed (frozen lakes are solid now): work out the pools there again. */
+  refresh(sMin: number, sMax: number) {
+    const first = holeCellIndex(Math.min(sMin, sMax)), last = holeCellIndex(Math.max(sMin, sMax));
+    for (const key of [...this.patches.keys()]) {
+      const j = Math.floor(key / KEY_SPAN) - KEY_OFFSET;
+      // A pool reaches a cell or two past its own.
+      if (j >= first - REFRESH_CELLS && j <= last + REFRESH_CELLS) this.patches.delete(key);
+    }
+    this.stale = true;
+    this.cellS = Number.NaN;
   }
 
   /** Work everything out afresh on the next update. */

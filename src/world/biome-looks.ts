@@ -3,6 +3,7 @@
  * side of a biome (wear, grip, terrain shape) is in game/biomes.ts; the two are
  * joined only by the biome's index.
  */
+import { fogVisibilityAt } from '../game/fog.ts';
 import * as THREE from 'three/webgpu';
 import { BIOME_COUNT, BIOME_LENGTH, CAVE, DUNES, ICE, LAVA, MEADOW, SCREE, biomeBlend, biomeOfStretch, biomeStretch, caveStartBefore } from '../game/biomes.ts';
 import { caveStart } from '../game/cave.ts';
@@ -188,6 +189,9 @@ export function atmosphereAt(s: number, out: Atmosphere): Atmosphere {
   out.exposure = from.exposure + (to.exposure - from.exposure) * t;
   out.fogStart = from.fogStart + (to.fogStart - from.fogStart) * t;
   out.fogEnd = from.fogEnd + (to.fogEnd - from.fogEnd) * t;
+  // A fog event pulls both ends of the fog in, so what can be seen shrinks to its share.
+  const visibility = fogVisibilityAt(s);
+  out.fogStart *= visibility; out.fogEnd *= visibility;
   return out;
 }
 

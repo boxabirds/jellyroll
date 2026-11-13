@@ -54,7 +54,7 @@ export async function handle(request: Request, env: Env, deps: Deps): Promise<Re
   const route = `${request.method} ${url.pathname}`;
   const address = request.headers.get('cf-connecting-ip') ?? 'local';
   try {
-    if (route === 'GET /api/health') return json({ status: 'ok', environment: env.ENVIRONMENT });
+    if (route === 'GET /api/health') return json({ status: 'ok', environment: env.ENVIRONMENT, version: env.APP_VERSION, sha: env.GIT_SHA, deployedAt: env.DEPLOYED_AT });
 
     if (route === 'POST /api/run') return json(await registerRun(env, deps.now()));
 

@@ -140,6 +140,8 @@ kbd.wide { padding: 0 10px; }
   animation: wobble 1.1s ease-in-out infinite;
 }
 #loading.failed .jelly-mark { animation: none; filter: grayscale(0.7); }
+#loading.unsupported .jelly-mark { filter: grayscale(0.4); }
+.load-hint { margin-top: 12px !important; font-size: 14px; }
 #fatal {
   margin: 18px 0 0; padding: 14px; border-radius: 12px; background: #fff; border: 1px solid var(--edge);
   text-align: left; font: 12px/1.5 ui-monospace, 'SF Mono', Menlo, monospace; white-space: pre-wrap; word-break: break-word;
@@ -163,6 +165,7 @@ kbd.wide { padding: 0 10px; }
 /* ---- Touch controls: translucent so the hill shows through ---- */
 .touch-controls { display: none; position: fixed; inset: 0; pointer-events: none; z-index: 6; }
 html.touch .touch-controls { display: block; }
+:root { --jump-size: 96px; --touch-edge: 18px; }
 html.touch .hints, html.touch .keys-only { display: none; }
 .touch-only { display: none; }
 html.touch .touch-only { display: block; }
@@ -184,14 +187,19 @@ html.touch .touch-only { display: block; }
 
 .touch-buttons {
   position: absolute; right: max(18px, env(safe-area-inset-right)); bottom: max(22px, env(safe-area-inset-bottom));
-  display: grid; grid-template-columns: auto auto; gap: 14px; justify-items: end; align-items: end;
+  display: grid; justify-items: end; align-items: end;
+}
+/* Settings on the left edge, above the stick; the actions (power-ups, jump) are on the right edge. */
+.touch-settings {
+  position: absolute; left: max(14px, env(safe-area-inset-left)); top: 50%; transform: translateY(-50%);
+  display: grid; gap: 14px;
 }
 .touch-jump, .touch-small {
   pointer-events: auto; touch-action: none; display: grid; place-items: center; padding: 0; color: #fff; cursor: pointer;
   border-radius: 50%; background: rgb(255 255 255 / 14%); border: 2px solid rgb(255 255 255 / 55%); box-shadow: 0 0 0 1px rgb(0 0 0 / 10%);
   transition: background 0.12s, transform 0.12s;
 }
-.touch-jump { grid-column: 1 / -1; width: 96px; height: 96px; }
+.touch-jump { width: var(--jump-size); height: var(--jump-size); }
 .touch-jump svg { width: 38px; height: 38px; }
 .touch-jump.down { background: rgb(255 255 255 / 34%); transform: scale(0.94); }
 .touch-small { width: 48px; height: 48px; }
@@ -216,7 +224,8 @@ html.touch .touch-only { display: block; }
   .stick-zone { width: 170px; height: 170px; }
   .stick-base { width: 112px; height: 112px; }
   .stick-knob { width: 50px; height: 50px; }
-  .touch-jump { width: 84px; height: 84px; }
+  :root { --jump-size: 84px; }
+  .touch-settings { top: calc(max(10px, env(safe-area-inset-top)) + 64px); transform: none; }
   .toast { top: 64px; }
 }
 
@@ -249,8 +258,8 @@ html:not(.show-cursor), html:not(.show-cursor) * { cursor: none !important; }
 .bee-badge b { font-size: 14px; }
 .bee-badge .bee-level { color: var(--ink-soft); font-size: 11px; }
 .bee-badge.max { border-color: #ffd54a; }
-@media (max-width: 640px) { .badges { left: 12px; top: 12px; transform: scale(0.8); transform-origin: top left; } }
-@media (pointer: coarse) { .badges { left: 8px; top: calc(max(10px, env(safe-area-inset-top)) + 54px); transform: scale(0.72); transform-origin: top left; } }
+@media (max-width: 640px) { .badges { left: 50%; top: 12px; transform: translateX(-50%) scale(0.8); transform-origin: top center; } }
+@media (pointer: coarse) { .badges { left: 50%; top: calc(max(10px, env(safe-area-inset-top)) + 58px); transform: translateX(-50%) scale(0.72); transform-origin: top center; } }
 .glass-badge {
   display: none; align-items: center; gap: 7px; margin-left: 6px; padding: 8px 14px; border-radius: 999px; background: var(--paper);
   border: 1px solid var(--edge); backdrop-filter: blur(10px); font-size: 14px; font-variant-numeric: tabular-nums;
@@ -309,7 +318,7 @@ html:not(.show-cursor), html:not(.show-cursor) * { cursor: none !important; }
 body:has(#worn-out.shown):not(:has(#name-entry.shown)):not(:has(#scoreboard.shown)) .scores-button { visibility: visible; }
 @media (pointer: coarse) { .scores-button kbd { display: none; } .scores-button { bottom: auto; top: 96px; } }
 body:has(#name-entry.shown) #worn-out, body:has(#scoreboard.shown) #worn-out { opacity: 0; }
-.score-note { color: var(--ink-soft); font-size: 14px; min-height: 1em; }
+.score-note { color: var(--ink); font-size: 15px; font-weight: 600; line-height: 1.35; min-height: 1em; }
 
 #scoreboard {
   position: fixed; inset: 0; z-index: 8; display: grid; align-content: center; justify-items: center; gap: 14px; padding: 18px;
@@ -338,7 +347,9 @@ body:has(#name-entry.shown) #worn-out, body:has(#scoreboard.shown) #worn-out { o
 .ne-actions .ne-sign { background: #62c934; }
 .ne-actions button:disabled { opacity: 0.5; cursor: default; }
 .ne-challenge { min-height: 0; }
-.ne-input { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
+/* The field a phone's keyboard types into: invisible, but inside the screen. (Off to the side, iOS scrolls the page to reach it, and the
+   keyboard comes and goes.) 16px text stops it zooming in. */
+.ne-input { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; font-size: 16px; pointer-events: none; caret-color: transparent; }
 
 .sb-card { width: min(460px, 94vw); padding: 22px 26px; border-radius: 22px; background: var(--paper); color: var(--ink); border: 1px solid var(--edge); }
 .sb-card h2 { margin: 0 0 8px; font-size: 26px; }
@@ -362,7 +373,20 @@ body:has(#name-entry.shown) #worn-out, body:has(#scoreboard.shown) #worn-out { o
 }
 .powerups .slot.shown { display: inline-flex; }
 .powerups .slot b { min-width: 1.2em; text-align: right; }
-@media (pointer: coarse) { .powerups .slot kbd { display: none; } }
+@media (pointer: coarse) {
+  .powerups .slot kbd { display: none; }
+  /* A column on the right edge, just above the jump button. */
+  .powerups {
+    left: auto; transform: none; flex-direction: column; align-items: flex-end; gap: 8px;
+    right: max(var(--touch-edge), env(safe-area-inset-right)); bottom: calc(max(22px, env(safe-area-inset-bottom)) + var(--jump-size) + 18px);
+  }
+  .powerups .slot { min-width: 64px; min-height: 48px; justify-content: center; padding: 6px 12px 6px 8px; }
+}
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 500px) {
+  .powerups { gap: 6px; }
+  .powerups .slot { min-height: 42px; padding: 4px 10px 4px 7px; }
+  .powerups .slot svg { width: 24px; height: 24px; }
+}
 
 .powerups .slot svg { width: 30px; height: 30px; flex: none; }
 .powerups .slot b { font-size: 18px; }
@@ -386,3 +410,74 @@ body.demo #powerups, body.demo #scores-button, body.demo #hints, body.demo #worn
 #demo-mark { position: fixed; top: clamp(16px, 3vh, 32px); left: clamp(20px, 5vw, 72px); z-index: 12; color: #fff; font-weight: 800; font-size: clamp(18px, 2vw, 26px); letter-spacing: 0.02em; text-shadow: 0 2px 10px rgb(0 0 0 / 50%); pointer-events: none; }
 #demo-note { position: fixed; right: clamp(16px, 3vw, 40px); bottom: clamp(14px, 3vh, 28px); z-index: 12; color: #fff; font-size: 14px; font-weight: 600; opacity: 0.8; text-shadow: 0 2px 8px rgb(0 0 0 / 60%); pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { #demo-caption.swap { animation: none; } }
+
+/* ---- The question before the first debug key of a run ---- */
+#debug-gate {
+  position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; background: rgb(10 14 20 / 45%); backdrop-filter: blur(4px);
+  opacity: 0; visibility: hidden; transition: opacity 0.15s ease;
+}
+#debug-gate.shown { opacity: 1; visibility: visible; }
+.gate-card {
+  width: min(440px, calc(100vw - 48px)); padding: 22px 24px; border-radius: 18px; background: var(--paper); border: 1px solid var(--edge);
+  text-align: center; box-shadow: 0 18px 50px rgb(0 0 0 / 30%);
+}
+.gate-card h2 { margin: 0 0 8px; font-size: 22px; }
+.gate-card p { margin: 0; color: var(--ink); font-weight: 600; line-height: 1.4; }
+.gate-actions { display: flex; gap: 10px; justify-content: center; margin-top: 18px; }
+.gate-actions button {
+  padding: 10px 18px; border-radius: 999px; border: 2px solid var(--ink); background: #fff; color: var(--ink); font: inherit; font-weight: 700; cursor: pointer;
+}
+.gate-actions .gate-go { background: var(--ink); color: #fff; }
+.gate-actions kbd { margin-left: 6px; opacity: 0.8; }
+
+/* ---- The first screen ---- */
+#splash {
+  position: fixed; inset: 0; z-index: 9; display: grid; grid-template-rows: auto 1fr auto; justify-items: center; padding: clamp(40px, 9vh, 96px) 18px clamp(24px, 5vh, 44px);
+  background: radial-gradient(ellipse at 50% 55%, rgb(36 28 58 / 5%), rgb(36 28 58 / 50%)); color: #fff; text-align: center;
+  opacity: 0; visibility: hidden; transition: opacity 0.3s ease, visibility 0.3s; text-shadow: 0 2px 10px rgb(0 0 0 / 55%);
+}
+#splash.shown { opacity: 1; visibility: visible; }
+.sp-top, .sp-bottom { display: grid; gap: 14px; justify-items: center; align-content: start; }
+.sp-bottom { grid-row: 3; align-content: end; gap: 18px; }
+/* The title is the jelly letters in the scene; this heading is for screen readers and for a browser that cannot draw them. */
+.sp-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.sp-tagline { margin: 0; font-size: clamp(16px, 2.2vw, 24px); font-weight: 700; opacity: 0.92; }
+.sp-credits { display: grid; gap: 6px; justify-items: center; font-size: clamp(15px, 1.8vw, 18px); font-weight: 600; }
+.sp-credits p { margin: 0; }
+.sp-credits a { color: #fff; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgb(255 255 255 / 55%); }
+.sp-credits a:hover, .sp-credits a:focus-visible { text-decoration-color: #fff; }
+.sp-credits p:first-child a { display: inline-flex; align-items: center; gap: 7px; vertical-align: middle; }
+.sp-icon { width: 1.25em; height: 1.25em; }
+.sp-play {
+  font: inherit; font-weight: 800; font-size: 20px; padding: 12px 38px; border-radius: 999px; cursor: pointer; border: 2px solid #2b2140;
+  background: #62c934; color: #14310a; box-shadow: 0 5px 0 #2b2140; text-shadow: none;
+}
+.sp-play kbd { margin-left: 8px; opacity: 0.7; font-size: 13px; }
+.sp-play:active { transform: translateY(3px); box-shadow: 0 2px 0 #2b2140; }
+@media (pointer: coarse) { .sp-play kbd { display: none; } }
+/* Behind the title the game's own readouts are not wanted. */
+body:has(#splash.shown) .readout, body:has(#splash.shown) .badges, body:has(#splash.shown) #powerups, body:has(#splash.shown) #hints,
+body:has(#splash.shown) .touch-controls, body:has(#splash.shown) #biome-banner { visibility: hidden; }
+/* The same for the name entry, the table and the debug question: the game's own controls would sit on top of their buttons. */
+body:has(#name-entry.shown) .touch-controls, body:has(#name-entry.shown) .badges, body:has(#name-entry.shown) #powerups, body:has(#name-entry.shown) .readout,
+body:has(#scoreboard.shown) .touch-controls, body:has(#scoreboard.shown) .badges, body:has(#scoreboard.shown) #powerups,
+body:has(#debug-gate.shown) .touch-controls, body:has(#debug-gate.shown) #powerups { visibility: hidden; }
+/* Phones: smaller notifications, kept clear of the controls on both edges (the stack above is sized for a desktop window). */
+@media (pointer: coarse) {
+  :root { --note: 16px; }
+  .toast, .warning, .power-up { max-width: calc(100vw - 150px); }
+}
+/* Phones: the Worn away card stays between the settings buttons on the left edge and the screen's right edge. */
+@media (pointer: coarse) and (orientation: portrait) { #worn-out { padding-inline: 76px 18px; } }
+
+/* The first screen, when an interrupted roll can be picked up. */
+.sp-resume {
+  font: inherit; font-weight: 800; font-size: 20px; padding: 12px 30px; border-radius: 999px; cursor: pointer; border: 2px solid #2b2140;
+  background: #ffc61a; color: #2b2140; box-shadow: 0 5px 0 #2b2140; text-shadow: none;
+}
+.sp-resume[hidden] { display: none; }
+.sp-resume b { margin-left: 6px; }
+.sp-resume:active { transform: translateY(3px); box-shadow: 0 2px 0 #2b2140; }
+#splash .sp-resume:not([hidden]) ~ .sp-play { background: #fff; font-size: 16px; padding: 9px 26px; }
+
+.sp-version { margin: 0; font-size: 12px; font-weight: 600; opacity: 0.6; letter-spacing: 0.02em; }

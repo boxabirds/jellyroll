@@ -3,6 +3,9 @@
 An endless downhill for one small jelly. The hill never ends and never repeats,
 and the jelly never stops.
 
+Source: https://github.com/boxabirds/jellyroll (GPL-3.0). The soft-body jelly it is built on is
+[Jelly Baby](https://github.com/scottstts/Jelly-Baby) by Scott Sun, credited on the first screen.
+
 ![A jelly rolling down a grassy valley, a magnet pulling jelly mushrooms toward it](docs/screenshot.png)
 
 Rolling wears the jelly away. Roll into the things that grow in patches down
@@ -67,8 +70,8 @@ jelly bounces off them like posts. Stalactites hang over it, and about one in fi
 to come down where the jelly is heading, cracks as it goes, and takes 7% of the jelly and a good deal of its speed if it
 strikes. A glass marble is not hurt by them: stalagmites do not slow it (it knocks them over as it knocks rocks to pieces) and it smashes any stalactite it touches, hanging or falling.
 
-Three power-ups float above the grass now and then. They are **kept, not used at once**: rolling through one puts it
-in its slot (shown as a chip at the bottom of the screen, up to nine of each), and the number key uses it. Tap the chip on a phone.
+Four power-ups float above the grass now and then. They are **kept, not used at once**: rolling through one puts it
+in its slot (shown as a chip at the bottom of the screen, up to nine of each), and the number key uses it (1 to 4). Tap the chip on a phone.
 
 
 - **Magnet** (red horseshoe, key **1**): for ten seconds every collectible within nine
@@ -76,6 +79,11 @@ in its slot (shown as a chip at the bottom of the screen, up to nine of each), a
 - **Seed packet** (key **3**): sprays a pile of seeds in arcs down the valley ahead. They
   land and sprout at once into the collectible of the ground they landed on,
   ready to roll through.
+
+- **Freeze ray** (ice crystals, key **4**; two to four in every biome, but not met until the second loop of the
+  course): sprays ice in front of the jelly. Water it lands on freezes (with the sound of ice cracking) and stops
+  hurting; lava it lands on goes black and cold and stops burning; ordinary ground in the lava biome cools; the cooled
+  lava and ground steam and hiss. Elsewhere it is just a spray of ice. (Debug: **F** adds one.)
 
 Two more floating things turn up now and then:
 
@@ -176,6 +184,41 @@ with a D1 database) acts as the referee of time:
 This stops the one-line fake score; it does not stop someone who waits out the
 clock, or a program that plays well. Rolls that used a debug key are never offered.
 Going live is in `docs/plans/global-high-scores-todo.md`.
+
+### First screen
+
+The game opens on a title screen: "Jelly Roll" in giant jelly letters, a link to this repository, a credit and
+link for Jelly Baby, and a Play button (Enter or Space also play). `?splash=0` skips it (for scripts), and the
+demo (`?demo=true`) and the `?test=` pages never show it.
+
+### Versions
+
+`package.json` holds the version (semantic: a minor number for a release with features, a patch number for fixes only) and
+`CHANGELOG.md` says what is in each. A build knows its version and the commit it was built from: both are on the first screen
+(small, at the bottom), in the browser console, in the crash screen's details and, once deployed, in `/api/health`
+(`version`, `sha`, `deployedAt`). To release: bump the version (`npm version minor --no-git-tag-version`), add a heading and notes to
+`CHANGELOG.md` (a test checks it is there), commit, push, then `ATTACH_DOMAIN=1 scripts/deploy`. The deploy script refuses to run
+unless the tree is clean and HEAD is what `origin/main` has, and it appends each deploy to `deploys.csv` (kept on this machine).
+
+### Picking a roll up again
+
+A roll in progress is saved every three seconds (and the moment the page is hidden or the graphics are lost) on a worker thread, to
+IndexedDB, so the page only copies a small message. If the graphics, the page or the tab is lost, the first screen offers
+"Continue your roll" for the next four minutes (the score server stops trusting a run that has been silent for five); "New roll"
+starts again. A roll that has ended, or is under 30 m, is not saved, and the server still checks a resumed roll like any other.
+
+### Debug keys
+
+For trying things out (a run that uses one is never offered for the leaderboard):
+
+| Key | Does |
+| --- | --- |
+| **Shift + 1 to 6** | jump to the next stretch of Meadow, Scree, Ice, Dunes, Cave, Lava |
+| **,** | go back 100 m |
+| **- / =** | smaller / bigger holes |
+| **B** | add a bee |
+| **G** | add a glass marble to carry (use it with 2) |
+| **F** | add a freeze ray to carry (use it with 4) |
 
 ### Demo mode
 

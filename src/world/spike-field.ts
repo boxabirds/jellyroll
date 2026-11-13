@@ -1,11 +1,11 @@
 /**
  * Draws the cave's stalagmites and stalactites: two instanced meshes of one rough stone spike, rebuilt from the hash when
- * the jelly moves to a new cell (or one is knocked over, or falls). The ones in motion are separate: a stalactite on its
- * way down, and a stalagmite the marble has knocked over, which topples the way it was pushed and sinks away.
+ * the jelly moves to a new cell (or one is destroyed, or falls). The ones in motion are separate: a stalactite on its
+ * way down, and a stalagmite the marble has hit, which is simply gone (the debris that bursts from it is the stalagmite breaking up; see rock-debris.ts).
  */
 import * as THREE from 'three/webgpu';
 import { valueNoise2 } from '../game/noise.ts';
-import type { Ball, SpikeEvent } from '../game/physics.ts';
+import type { Ball } from '../game/physics.ts';
 import { isRockBroken } from '../game/rocks.ts';
 import { createSpike, spikeCellIndex, stalactiteInCell, stalagmiteInCell } from '../game/spikes.ts';
 import { courseCenter } from '../game/terrain.ts';
@@ -29,9 +29,6 @@ const STONE_GLOW = '#10131c';
 const STONE_ROUGHNESS = 0.55;
 const TAU = Math.PI * 2;
 /** A knocked-over stalagmite: how long it takes to fall flat, then to sink away, and how many can be going at once. */
-const TOPPLE_SECONDS = 0.55;
-const SINK_SECONDS = 0.9;
-const MAX_TOPPLING = 8;
 const UP = new THREE.Vector3(0, 1, 0);
 
 /** A unit spike: base radius 1 at y = 0, tip at y = 1. */
@@ -49,14 +46,12 @@ function spikeGeometry() {
   return geometry;
 }
 
-type Toppling = { active: boolean; age: number; event: SpikeEvent; mesh: THREE.Mesh };
 
 export class SpikeField {
   readonly group = new THREE.Group();
   private readonly standing: THREE.InstancedMesh;
   private readonly hanging: THREE.InstancedMesh;
   private readonly falling: THREE.Mesh[] = [];
-  private readonly toppling: Toppling[] = [];
   private readonly material = new THREE.MeshStandardNodeMaterial({ color: STONE_COLOR, roughness: STONE_ROUGHNESS, metalness: 0, side: THREE.DoubleSide });
   private readonly geometry = spikeGeometry();
   private readonly spike = createSpike();
@@ -65,13 +60,11 @@ export class SpikeField {
   private readonly quaternion = new THREE.Quaternion();
   private readonly flip = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
   private readonly turn = new THREE.Quaternion();
-  private readonly axis = new THREE.Vector3();
   private readonly scale = new THREE.Vector3();
   private cellX = Number.NaN;
   private cellZ = Number.NaN;
   private originZ = Number.NaN;
   private changes = -1;
-  private nextToppling = 0;
 
   constructor() {
     this.material.emissive.set(STONE_GLOW);
@@ -83,9 +76,6 @@ export class SpikeField {
       this.group.add(mesh);
     }
     for (let i = 0; i < MAX_FALLERS; i++) this.falling.push(this.single());
-    for (let i = 0; i < MAX_TOPPLING; i++) {
-      this.toppling.push({ active: false, age: 0, mesh: this.single(), event: { x: 0, y: 0, z: 0, radius: 0, length: 0, look: 0, dirX: 0, dirZ: -1 } });
-    }
   }
 
   private single() {
@@ -94,14 +84,6 @@ export class SpikeField {
     mesh.frustumCulled = false;
     this.group.add(mesh);
     return mesh;
-  }
-
-  /** A stalagmite was knocked over: it topples away from the push. */
-  topple(event: SpikeEvent) {
-    const slot = this.toppling[this.nextToppling];
-    this.nextToppling = (this.nextToppling + 1) % MAX_TOPPLING;
-    Object.assign(slot.event, event);
-    slot.active = true; slot.age = 0;
   }
 
   update(ball: Ball, originZ: number, dt: number) {
@@ -114,20 +96,6 @@ export class SpikeField {
       mesh.position.set(faller.x, faller.tip + faller.length, faller.z - originZ);
       mesh.quaternion.copy(this.flip);
       mesh.scale.set(faller.radius, faller.length, faller.radius);
-    }
-    for (const slot of this.toppling) {
-      if (!slot.active) { slot.mesh.visible = false; continue; }
-      slot.age += dt;
-      if (slot.age >= TOPPLE_SECONDS + SINK_SECONDS) { slot.active = false; slot.mesh.visible = false; continue; }
-      const event = slot.event;
-      // It falls faster as it goes, like anything tipping over, then lies flat and sinks into the floor.
-      const fall = Math.min(1, slot.age / TOPPLE_SECONDS);
-      const sink = Math.max(0, (slot.age - TOPPLE_SECONDS) / SINK_SECONDS);
-      this.axis.set(event.dirZ, 0, -event.dirX);
-      slot.mesh.quaternion.setFromAxisAngle(this.axis, (Math.PI / 2) * fall * fall);
-      slot.mesh.position.set(event.x, event.y - sink * event.radius * 1.5, event.z - originZ);
-      slot.mesh.scale.set(event.radius, event.length, event.radius);
-      slot.mesh.visible = true;
     }
   }
 
@@ -165,7 +133,6 @@ export class SpikeField {
   }
 
   reset() {
-    for (const slot of this.toppling) slot.active = false;
     this.invalidate();
   }
 

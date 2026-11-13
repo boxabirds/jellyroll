@@ -23,6 +23,10 @@ export interface Env {
   TURNSTILE_SECRET?: string;
   /** local, staging or production. */
   ENVIRONMENT: string;
+  /** What is deployed: set by scripts/deploy, shown by /api/health. */
+  APP_VERSION?: string;
+  GIT_SHA?: string;
+  DEPLOYED_AT?: string;
   /** The built game, served for every path that is not under /api. */
   ASSETS?: { fetch(request: Request): Promise<Response> };
 }

@@ -313,7 +313,9 @@ export const SEED_GROW_SECONDS = 0.35;
 /** Sprouted collectibles are on the big side: radius is picked from this share of the range upward. */
 export const SEED_MIN_SIZE_SHARE = 0.4;
 /** The most planted collectibles alive at once, and how long one lasts if it is never collected. */
-export const MAX_PLANTED = 64;
+/** Whole sprays that can be out at once (flying, sprouting or waiting to be collected) before the oldest seeds are given up. */
+export const SEED_SPRAYS_KEPT = 5;
+export const MAX_PLANTED = SEED_PILES * SEEDS_PER_PILE * SEED_SPRAYS_KEPT;
 export const SEED_LIFETIME_SECONDS = 45;
 /** Planted collectibles this far behind the jelly (metres) are dropped. */
 export const SEED_BEHIND_DISTANCE = 30;
@@ -562,10 +564,33 @@ export const MAX_SPIKE_EVENTS = 4;
 
 /**
  * Power-ups are kept, not used the moment they are found: the number keys use them. Slot 1 is the magnet, 2 the glass marble,
- * 3 a seed packet. At most STOCK_MAX of each are carried.
+ * 3 a seed packet, 4 a freeze ray. At most STOCK_MAX of each are carried.
  */
 export const POWERUP_MAGNET = 0;
 export const POWERUP_GLASS = 1;
 export const POWERUP_SEEDS = 2;
-export const POWERUP_SLOTS = 3;
+export const POWERUP_FREEZE = 3;
+export const POWERUP_SLOTS = 4;
 export const STOCK_MAX = 9;
+
+// --- Freeze ray ---------------------------------------------------------------
+/** The freeze ray's crystals float like the marbles (two to four in every biome) but are not met until the second loop of the course. */
+export const FREEZE_FLOAT_HEIGHT = 1.6;
+export const FREEZE_LATERAL_FRACTION = 0.3;
+export const FREEZE_PICKUP_RADIUS = 1.8;
+/** Frozen areas are round patches of this radius (metres), laid at these distances ahead of the jelly and these offsets to its right. */
+export const FREEZE_PATCH_RADIUS = 3.4;
+export const FREEZE_DISTANCES: readonly number[] = [3, 6, 9, 12];
+export const FREEZE_SIDES: readonly number[] = [-2.4, 0, 2.4];
+
+// --- Fog in the scree ----------------------------------------------------------
+/** Each scree stretch has this chance of a fog event. */
+export const FOG_CHANCE = 0.5;
+/** A fog event lasts this many metres, and starts no earlier than this share of the way through the biome (and ends inside it). */
+export const FOG_LENGTH = 400;
+export const FOG_EARLIEST_SHARE = 0.5;
+/** How much of normal visibility is left at the thickest: somewhere from the first to the second of these. */
+export const FOG_VISIBILITY_THICKEST = 0.1;
+export const FOG_VISIBILITY_THINNEST = 0.5;
+/** The fog thickens over this many metres at the start of the event and thins over as many at its end. */
+export const FOG_RAMP = 80;

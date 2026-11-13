@@ -11,18 +11,21 @@ const MUTE_KEY = 'KeyM';
 /** Help is asked for by the character typed, wherever "?" lives on the keyboard. */
 const HELP_CHARACTER = '?';
 const CLOSE_HELP_KEY = 'Escape';
-/** The digits 1 to 3 use the power-up kept in that slot; Shift and a digit 1 to 6 is a debug jump to that biome. Debug: - and = make the holes smaller and bigger; B adds a bee; G adds a glass marble to carry; comma goes back 100 metres. */
+/** The digits 1 to 4 use the power-up kept in that slot; Shift and a digit 1 to 6 is a debug jump to that biome. Debug: - and = make the holes smaller and bigger; B adds a bee; G adds a glass marble to carry; F adds a freeze ray; comma goes back 100 metres. */
 const BEE_KEY = 'b';
 const MARBLE_KEY = 'g';
+const FREEZE_KEY = 'f';
 const BACK_KEY = ',';
 /** T shows the table of top rolls. */
 const TABLE_KEY = 't';
 const DIGIT_CODE = /^Digit([1-6])$/;
+/** The digits that use a kept power-up (1 to this). */
+const POWERUP_KEYS = 4;
 const HOLES_SMALLER_KEY = '-';
 const HOLES_BIGGER_KEYS = ['=', '+'];
 const HANDLED_KEYS = new Set<string>([...ACCELERATE_KEYS, ...DECELERATE_KEYS, ...LEFT_KEYS, ...RIGHT_KEYS, JUMP_KEY, RESTART_KEY, MUTE_KEY]);
 
-export type DebugCommand = { biome: number } | { holes: number } | { bee: true } | { marble: true } | { back: true };
+export type DebugCommand = { biome: number } | { holes: number } | { bee: true } | { marble: true } | { freeze: true } | { back: true };
 
 export class Input {
   /** Mutated in place; the physics step reads it directly. */
@@ -84,11 +87,12 @@ export class Input {
       if (digit) {
         const number = Number(digit[1]);
         if (event.shiftKey) this.onDebug({ biome: number - 1 });
-        else this.onUse(number - 1);
+        else if (number <= POWERUP_KEYS) this.onUse(number - 1);
         return;
       }
       if (event.key.toLowerCase() === BEE_KEY) { this.onDebug({ bee: true }); return; }
       if (event.key.toLowerCase() === MARBLE_KEY) { this.onDebug({ marble: true }); return; }
+      if (event.key.toLowerCase() === FREEZE_KEY) { this.onDebug({ freeze: true }); return; }
       if (event.key === BACK_KEY) { this.onDebug({ back: true }); return; }
       if (event.key.toLowerCase() === TABLE_KEY) { this.onTable(); return; }
       if (event.key === HOLES_SMALLER_KEY) { this.onDebug({ holes: -1 }); return; }

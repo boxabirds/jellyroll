@@ -44,6 +44,19 @@ export class RunSession {
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.beat(); });
   }
 
+  /** The score server's token for this run, once it has one (saved with the run, so a reload can carry on with it). */
+  get runToken(): string | null { return this.token; }
+
+  /** Carry on a run saved before the page was lost: its token, and whether a debug key had disqualified it. */
+  resume(token: string | null, debugUsed: boolean) {
+    this.stop();
+    this.debugUsed = debugUsed;
+    if (!token) return;
+    this.token = token;
+    this.timer = window.setInterval(() => this.beat(), HEARTBEAT_SECONDS * MS_PER_SECOND);
+    this.beat();
+  }
+
   /** True when this run was registered and played without the debug keys. */
   get eligible(): boolean { return this.token !== null && !this.debugUsed; }
 

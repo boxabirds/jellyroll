@@ -28,7 +28,7 @@ const REFUSALS: Readonly<Record<string, string>> = {
   busy: 'Too many scores from here just now. Try again a little later.',
   offline: "Can't reach the table, so this roll can't go on it.",
   challenge: "Couldn't check that you're a person. Try again.",
-  debug: 'Rolls with the debug keys do not go on the table.',
+  debug: "You used debug keys (Shift+number, F, G, B or comma), so this roll can't go on the leaderboard. Roll again without them.",
 };
 
 export class HighScores {
@@ -110,6 +110,10 @@ export class HighScores {
         this.entry.holdFor('One moment: checking that you are a person…');
         const token = await solveChallenge(this.entry.challengeTarget);
         if (token) { challenge = token; result = { kind: 'signed', name: result.name }; continue; }
+        // The check failed: keep the name on the platform and let the player try again (or skip with Escape).
+        challenge = undefined;
+        result = await this.entry.reopen(REFUSALS.challenge);
+        continue;
       }
       this.entry.close();
       this.onNote(REFUSALS[outcome.reason] ?? REFUSALS['not-verified']);

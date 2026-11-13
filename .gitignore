@@ -7,3 +7,6 @@ shots
 .wrangler
 worker/.wrangler
 docs/*.mp4
+worker/wrangler.production.toml
+docs/showcase/
+deploys.csv
